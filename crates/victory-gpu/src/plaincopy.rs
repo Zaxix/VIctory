@@ -690,6 +690,37 @@ mod tests {
         unsafe { VirtualFree(base.cast(), 0, MEM_RELEASE) };
     }
 
+    /// A title copy in place: whole, large ones split over the helper
+    /// threads; an overlapping one is not tried; a page that is not there
+    /// on either side ends it with false and the thread goes on.
+    #[test]
+    fn title_copies_are_whole_or_end_without_a_fault() {
+        if !title_moves_on() {
+            return;
+        }
+        for len in [300usize, 64 << 10, 5 << 20] {
+            let from: Vec<u8> = (0..len).map(|i| (i * 31 + 7) as u8).collect();
+            let mut to = vec![0u8; len];
+            assert!(move_title(to.as_mut_ptr(), from.as_ptr(), len), "{len}");
+            assert!(to == from, "{len}");
+        }
+        let mut both = vec![1u8; 4 * PAGE];
+        let at = both.as_mut_ptr();
+        assert!(!move_title(at.wrapping_add(PAGE), at, 2 * PAGE), "overlapping: not tried");
+        // SAFETY: memory of the test's own: two pages, the first committed.
+        let base = unsafe { VirtualAlloc(std::ptr::null(), 2 * PAGE, MEM_RESERVE, PAGE_NOACCESS) } as *mut u8;
+        assert!(!base.is_null());
+        // SAFETY: the first page of that reservation.
+        assert!(!unsafe { VirtualAlloc(base.cast(), PAGE, MEM_COMMIT, PAGE_READWRITE) }.is_null());
+        let other = vec![9u8; 2 * PAGE];
+        // Into the hole, then out of it.
+        assert!(!move_title(base, other.as_ptr(), 2 * PAGE));
+        let mut back = vec![0u8; 2 * PAGE];
+        assert!(!move_title(back.as_mut_ptr(), base, 2 * PAGE));
+        // SAFETY: the test's reservation.
+        unsafe { VirtualFree(base.cast(), 0, MEM_RELEASE) };
+    }
+
     /// Three pages reserved, the first committed: a copy that stays in the
     /// first page is whole; one that runs into the second ends with false,
     /// the bytes before the hole copied, and the thread goes on.
