@@ -36,8 +36,6 @@ windows-sys = "0.61.2"
 windows = "0.62.2"
 windows-core = "0.62.2"
 blake3 = "1.8.7"
-# Texture change checks: 128-bit xxh3, about twice blake3's speed on AVX2-only CPUs (BSL-1.0).
-xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 memchr = "2.8.3"
 # SIMD-accelerated pure-Rust zlib/deflate (Zlib license, runtime AVX2/SSE4.2 dispatch).
 zlib-rs = { version = "0.6.8", default-features = false, features = ["std"] }

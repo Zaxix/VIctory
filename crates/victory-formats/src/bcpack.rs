@@ -256,15 +256,6 @@ impl Tables {
 /// the block count. The stream carries no size: bytes after the last one the
 /// lanes need are ignored, a stream that runs out is an error.
 pub fn decode(bc: u8, src: &[u8], dst: &mut [u8], tables: &Tables) -> Result<(), Error> {
-    decode_into(bc, src, dst, tables, &mut Vec::new())
-}
-
-/// [`decode`] with the caller's buffer for the lanes' symbols (twice the
-/// output's bytes for the 16-byte formats, one and a half for the 8-byte
-/// ones), kept between calls: a streaming worker otherwise asked the system
-/// for fresh zeroed pages of that size at every request. Grown as needed,
-/// never zeroed again: every symbol of it is written before it is read.
-pub fn decode_into(bc: u8, src: &[u8], dst: &mut [u8], tables: &Tables, scratch: &mut Vec<u8>) -> Result<(), Error> {
     let block = match bc {
         1 | 4 => 8,
         3 | 5 | 6 | 7 => 16,
@@ -283,12 +274,9 @@ pub fn decode_into(bc: u8, src: &[u8], dst: &mut [u8], tables: &Tables, scratch:
         _ => (&[3, 3, 7, 7, 7, 7, 7, 6, 6, 4, 5, 7, 7, 7, 7, 4], 2),
     };
     let stride = widths.len() * per;
-    if scratch.len() < blocks * stride {
-        scratch.resize(blocks * stride, 0);
-    }
-    let records = &mut scratch[..blocks * stride];
+    let mut records = vec![0u8; blocks * stride];
     let mut next = src.iter().copied();
-    lanes(tables, widths, per, blocks, |_| next.next(), records)?;
+    lanes(tables, widths, per, blocks, |_| next.next(), &mut records)?;
     let records = records.chunks_exact(stride);
     let out = dst.chunks_exact_mut(block);
     let t = tables;
@@ -1285,25 +1273,6 @@ mod tests {
             (2 * v) as u8
         } else {
             (-2 * v - 1) as u8
-        }
-    }
-
-    /// A kept buffer full of other bytes, and one too short or longer than
-    /// needed, decode as a fresh one does.
-    #[test]
-    fn a_kept_scratch_decodes_as_a_fresh_one() {
-        let t = Tables::parse(&tables()).unwrap();
-        let mut b0 = vec![0, 0, zigzag(10), zigzag(-3)];
-        b0.extend((0..8).map(|k| ((2 * k) & 7) | ((2 * k + 1) & 7) << 3));
-        let mut b1 = vec![0, 1, zigzag(1), zigzag(1)];
-        b1.extend((0..8).map(|_| 1 | 1 << 3));
-        let src = stream(&t, &BC4_LANES, 1, &[b0, b1]);
-        let mut fresh = [0u8; 16];
-        decode(4, &src, &mut fresh, &t).unwrap();
-        for mut scratch in [vec![0xa5u8; 4096], vec![0x5a; 3], Vec::new()] {
-            let mut kept = [0xffu8; 16];
-            decode_into(4, &src, &mut kept, &t, &mut scratch).unwrap();
-            assert_eq!(kept, fresh);
         }
     }
 

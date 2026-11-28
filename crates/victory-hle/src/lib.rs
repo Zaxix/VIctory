@@ -12,6 +12,11 @@
 //! then the host if [`HostPolicy`] allows that DLL, then `Missing`.
 
 mod host;
+mod image_watch;
+#[cfg(all(windows, feature = "diagnostics"))]
+pub use victory_gpu::frame_phase;
+pub use victory_gpu::frames_begun;
+
 pub mod modules;
 mod registry;
 pub mod runtime;
@@ -19,10 +24,17 @@ pub mod runtime;
 pub use host::HostPolicy;
 pub use registry::{HleExport, HleModule, registry};
 pub use victory_gpu::console;
-/// What the layer was doing, for a line about a stall of the title's main
-/// thread (`victory`'s watchdog watch).
+/// DLSS and frame generation (`VICTORY_DLSS`, `VICTORY_FRAMEGEN`).
 #[cfg(windows)]
-pub use victory_gpu::stall_report;
+pub use victory_gpu::streamline;
+pub use victory_gpu::save_share;
+#[cfg(windows)]
+pub use victory_gpu::reserve_upload_space;
+#[cfg(all(windows, feature = "diagnostics"))]
+pub use victory_gpu::replay;
+
+#[cfg(windows)]
+pub use victory_gpu::pipeline::known as known_pipelines;
 
 use victory_loader::{ImportResolver, Provenance, Resolution};
 use victory_pe::ImportSymbol;
@@ -123,5 +135,31 @@ mod tests {
             ),
             Some(Provenance::Hle)
         );
+    }
+
+    // #510: the RPC runtime's GUID calls are ours, so the DLL itself stays
+    // outside the host policy (its own `ws2_32` imports would be a network
+    // path `modules::net` never sees).
+    #[test]
+    fn the_rpc_runtime_is_implemented_here() {
+        let r = HleResolver::new(HostPolicy::none());
+        for call in [
+            "UuidCreate",
+            "UuidCreateSequential",
+            "UuidFromStringA",
+            "UuidFromStringW",
+            "UuidToStringA",
+            "UuidToStringW",
+            "RpcStringFreeA",
+            "RpcStringFreeW",
+        ] {
+            assert_eq!(
+                r.classify("rpcrt4.dll", &name(call)),
+                Some(Provenance::Hle),
+                "{call}"
+            );
+        }
+        // A call we do not implement is not passed to the host either.
+        assert_eq!(r.classify("rpcrt4.dll", &name("RpcServerRegisterIf")), None);
     }
 }

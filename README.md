@@ -1,1046 +1,432 @@
-# Defeat (work in progress)
+# Defeat — on the VIctory-NVIDIA base (branch `nvidia-base`)
 
-**Defeat** is Zaxix's fork of [VIctory](https://github.com/Marvisak/VIctory) (the name is
-the opposite of its parent's). Inside it is still VIctory: the program is `victory.exe`, the
-crates are `victory-*`, and every setting is a `VICTORY_*` environment variable, so that fixes
-from VIctory and its other forks keep coming across and every switch named in the docs and the
-research checklist means what it says.
+**Best world average so far on the owner's PC (Ryzen 7 5800X, RTX 4070): 6.7 fps, 22 % of 30**
+(run 19, the old line). This branch has not been run on the owner's PC yet.
 
-> **Zaxix/Defeat `main`** (from 2026-11-27; the repository was Zaxix/VIctory, whose links redirect): built on fxceless's gta6 base,
-> not on upstream `main`, with this fork's own changes on top, tuned for an
-> NVIDIA RTX 4070 and a Ryzen 7 5800X. On by default: the `shadow::exact` and
-> `shadow::loose` lock fixes; card-word merges (`VICTORY_MERGE_WORDS=0`
-> turns them off) and the DirectStorage before-write notice
-> (`VICTORY_PAGE_WRITES_BEFORE=0`); klbf-lab #41's DXIL passes (loop-invariant
-> motion, barriers); 128-bit xxh3 texture change checks
-> (`VICTORY_TEXTURE_DIGEST=blake3`); lean spread dispatches on NVIDIA cards
-> (`VICTORY_SPREAD_LEAN=0`); levels-on-demand view slots made again only with
-> nothing on the card (`VICTORY_VIEWS_REMADE_QUIET=0` or `1`). Counted only:
-> the title's `PAGE_GRAPHICS_*` flags and the GPU work by them
-> (`VICTORY_GPU_ACCESS_COSTS=0`), and where host copies live (PC memory,
-> card memory, GPU upload heap, in place) with what each placement costs,
-> every 30 s (`VICTORY_PLACEMENT_LOOK=0`; the observing half of adaptive
-> placement: nothing moves). Streaming: each DirectStorage worker keeps its
-> buffers between requests (`VICTORY_DSTORAGE_SCRATCH_MB=0` for fresh ones);
-> `VICTORY_DSTORAGE_WORKERS` and `VICTORY_PIPELINE_WORKERS` set the two pools'
-> sizes for thread-count tests (defaults unchanged: 16 and 12 on a 5800X). Pipelines: a frame waits at
-> most 10 s in all for new compute pipelines, so the title's hang watchdog does not fire
-> (`VICTORY_PIPELINE_COMPUTE_WAIT_MS`); compute pipelines no earlier run used are made in the background
-> on 2 workers from their creation (`VICTORY_PIPELINE_COMPUTE_EARLY`, a worker count, 0 off); the frame
-> line says why draws were dropped. Texture refreshes no longer wait while the game remaps its memory
-> (`VICTORY_TEXTURE_NO_WAIT=0` waits, as before); textures picked by index are uploaded on a thread of their own
-> (`VICTORY_HEAP_WORKER=0` keeps them on the recording thread). Diagnostics: `VICTORY_*_WHY` switches no longer
-> invalidate the shader cache, and `VICTORY_SHADER_FRESH=<hashes>` translates the named shaders anew so their
-> diagnostics print (one shader at a time, so their lines no longer interleave).
-> **Faster defaults (`VICTORY_FAST`, on; `=0` puts them all back as in runs 1-9):** the switches the gta6
-> base's tester measured as gains on an RTX 4070 but left off: `VICTORY_ASYNC_SUBMIT`, `VICTORY_QUEUE2=1`,
-> `VICTORY_COPY_PLAIN`, `VICTORY_JOIN_PARTS`, `VICTORY_BACK_OWN_VIEW` (now storing only the words the card
-> changed, as the old path does), `VICTORY_CARD_REHASH_RUNS`, `VICTORY_WIDE_MERGE` (now also on the
-> copy-back thread, run 9's largest cost), `VICTORY_RECHECK_SOON` and, since run 11,
-> `VICTORY_LEVELS_ON_DEMAND`; each also takes its own `=0`. The 28 compute programs the RTX 4070 refused
-> (64-lane waves) are tried in the exact paired form first (`VICTORY_WAVE_PAIRS_ONLY=none`: not).
-> **After run 12 (not yet run on the owner's PC):** the four 32-lane shadow-ray programs translate (heap
-> slot addresses); `VICTORY_SETTLE_ROOM`, `VICTORY_LOOKUP_CACHE`, `VICTORY_PARALLEL_REFRESH`,
-> `VICTORY_CARD_SYNC_BATCH` and `VICTORY_REFRESH_PAGES` join the faster defaults; PlayStation pads
-> (DualShock 4, DualSense) work as gamepads (`VICTORY_SONY_PADS=0`: not); the submitting and copy-back
-> threads run above normal priority (`VICTORY_OUR_PRIORITY=0`); the copy-back's merge finds the title's
-> sent bytes by a search. **Ray tracing:** the plan is `docs/RAY_TRACING_PLAN.md`; the title's hang
-> watchdog is watched (a line every 10 s once the main thread stands still: what we were doing;
-> `VICTORY_STALL_WATCH=0` off) and `VICTORY_NO_WATCHDOG=1` keeps it from ending the run, for a first
-> test with the structure builder on; that switch now re-translates only the ~100 programs that test rays.
-> Research notes: `docs/RESEARCH_CHECKLIST.md`. Results on that PC:
-> [below](#status-on-the-owners-pc-ryzen-7-5800x--rtx-4070).
+**Why this branch exists.** Defeat's own line (tagged `defeat-own-line`, and still `main` until
+the owner switches) grew from fxceless's gta6 base. On 27 November fxceless stopped that line and
+rebuilt on [VIctory-NVIDIA](https://github.com/trustno1-coder/VIctory-NVIDIA): on their GeForce RTX
+4070 it averaged about **17 fps in the open world at 2560x1440**, about half the frame time of
+their old code (the base Defeat grew from), which managed about 10 fps at a lower render size. With
+ray tracing on, 1080p upscaled to 1440p, they measured about 15 fps. Those are other people's
+numbers on other CPUs, not a controlled test here. Defeat's run 19 still spent 50–55 ms a frame
+with the card idle while our submitting thread prepared work. VIctory-NVIDIA's submitting path is
+built differently (the title's list calls recorded and translated on threads of ours, a staged
+relay for what the card wrote, heap records synced at submit, the title's page-mapping copies kept without Windows views, shader
+writes into large write-combined copies left on the card). On an RTX 5080 its `preparing` time is
+about 21 ms.
 
-A work-in-progress fork of [VIctory](https://github.com/Marvisak/VIctory), a
-compatibility layer that runs an Xbox Series title natively on Windows from
-files the user supplies. This fork follows upstream
-`main` and adds fixes aimed at one goal: getting the game's world to render
-correctly and playably on one particular PC.
+**What is here:** VIctory-NVIDIA's tree at `9300875` (28 November), merged with Defeat's history so
+both lines stay in the log. Defeat's work that the base already has another way (kept DirectStorage
+views, page numbers given out again, batched remaps, frame-time spread lines) was not carried over.
+Changes from VIctory-NVIDIA:
 
-**This repository contains no game files, code or assets.** You need your own
-copy of the game. It is not affiliated with or endorsed by the game's
-developer or publisher.
+- `scripts/play-defeat.ps1`: VIctory-NVIDIA's launcher with this PC's defaults. Ray tracing is
+  off (`VICTORY_BVH_BUILDER` is not set). With NVIDIA's DLSS files present it uses DLSS Quality at
+  2560x1440. Without them the scene is drawn at 1920x1080 and the title upscales it (`-Res
+  1080to1440`), not drawn at full 1440p.
+- `docs/RESEARCH_CHECKLIST.md` carried over from Defeat.
+- The issue bots (game requests, spam, needs-logs) are removed. They would act on this repository's
+  issues. CI also runs on this branch.
 
-## Credits
-
-- **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
-  contributors is the base of everything here: the loader, the runtime
-  services, the Direct3D 12 back end and the shader recompiler. Licensed
-  GPL-3.0-or-later; so is this fork. Upstream's history is kept intact below
-  the single commit that carries this fork's changes.
-- **[XCL](https://github.com/ivall/xcl)** by ivall and its contributors
-  (GPL-3.0, per its LICENSE file; R50/R52) was used as a reference for how the same title behaves under
-  another layer. Fixes inspired by it were written anew in VIctory's code.
-- The guard over every view of a memory page is code by **myokex**
-  ([victory-amd](https://github.com/myokex/victory-amd), commit `c6dc4d8`), which
-  adapts pull request #115 here by Spexivus, its correction by joroyt and a part of
-  VIctory #1122 by tightfall. The read-beside fix for kernel reads into title
-  memory is by **Joshua Odom** (commit `10ea38e` of the same fork family). Both
-  are carried here unchanged apart from one merge conflict.
-- This fork's changes were developed with [Claude Code](https://claude.com/claude-code).
-
-## Status on the owner's PC (Ryzen 7 5800X + RTX 4070)
-
-Ryzen 7 5800X (8 cores, 16 threads), NVIDIA RTX 4070 12 GB (Resizable BAR on, PCIe 4.0 x16), 64 GB
-DDR4-3600, Windows. Series X profile; ray-tracing structure builder off (`VICTORY_BVH_BUILDER=0`, see
-below). Each run's log is read in full and recorded in `docs/RESEARCH_CHECKLIST.md` (implementation
-status table).
-
-### Frame rate in the world, and how far to 30 fps
-
-**Best so far: 6.7 fps in the world, 22 % of the way to 30 fps** (run 19: the median of the
-frame lines with 3,000 or more draws was 148.2 ms, run 18 149.5 ms; menus and loading screens run at
-30 fps and are left out). Counted frame by frame for the first time in run 19 (every frame between
-two presents, long ones included), the world ran at **6.3 fps on average, 21 % of 30**: 2,611
-frames in 414 s, 6.5 % of them over 300 ms. 30 fps is 33 ms a frame, so about 115 ms a frame still
-has to go. Where a world frame goes now (run 19, medians; the parts run side by side on several
-threads): preparing the card's work about 72 ms, copying its results back about 38 ms, and the card
-stands idle about 65 ms a frame, 60 of them waiting for us, so the card is not what holds the frame
-rate back. Streaming no longer stalls: no storage request over 250 ms in run 19 (run 17: 2,866, 204
-of them over 1 s).
-`cargo xtask runstats run.txt` reads a run log into these figures (by draws per frame, and by the
-phases of any `VICTORY_X=alt` switch).
-
-| Run (2026-11-27) | Got to | Frame rate | What the log showed | Fixed since |
-|---|---|---|---|---|
-| 1 | Title screen, menu, intro; crashed loading into the world | 30 fps in menus | The title's hang watchdog fired: one frame compiled ~950 new pipelines, the compute ones one by one on the title's thread | A frame waits at most 10 s for new compute pipelines |
-| 2 | The world (black, lights only) | 0.1–0.3 fps | ~2,100 pipelines asked for a minute, ~365 made; up to 3,400 draws a frame dropped waiting for them; CPU 100 % | — (caches warming) |
-| 3 | The world at night: city lights, the character | ~0.2–1 fps | No shader-cache hits: an edit of ours had changed the cache key; video memory at its budget (~10.9 GB), ~23,000 texture slots waiting for room | Cache key frozen (`shader_cache.key`) |
-| 4 | First story cutscene, with sound; very dark | 0.1–1.8 fps | Caches work (1,509 shader hits, 1,698 pipelines from the library); two frames waited 13.6 and 14.6 s for four compute pipelines; card at 10.2–11.9 GB of a ~10.4 GB budget | Compute pipelines started at creation (overdone, see run 5); a true 10 s limit; drop reasons logged |
-| 5 | Further into the cutscene; people visible, faces black | 0.1–2 fps in the world | Dropped draws are now ~all the switched-off ray-tracing builder's; compute-at-creation queued ~2,900 pipelines on all 12 workers, CPU 99 % for the whole run, and everything CPU-side (copy-back 260–1,000 ms, texture refreshes up to 1.7 s waiting on title remaps, the heap pass) slowed with it; 12 compute pipelines refused by the driver, 5 compute shaders do not translate | Spare compute pipelines on at most 2 workers, last; a refused pipeline logs the wave size it asks for |
-| 6 | The cutscene and its credits | 0.1–2.8 fps in the world | The CPU no longer pinned (about 6 of 16 processors); all 12 refused pipelines ask for 64-lane waves, which the RTX 4070 does not run; the largest cost a frame is texture refreshes waiting for the game to finish remapping memory (0.4–2.3 s); the card's memory just over its budget | Compute waits on several threads at once share one deadline (two frames had gone 3 s past the limit) |
-| 7 | Further into the cutscene; faces, skin and hair drawn | median 1.5 fps, up to 7.4 fps in the world | With `VICTORY_TEXTURE_NO_WAIT=1`: the remap wait gone (it was up to 8 s a frame); frames with over 300 draws 689 ms median against 2,245 ms in run 6, slowest 2.4 s against 13 s; no texture ever had to be left for a later frame; no frame reached the compute-wait limit. Now the largest costs: the thread that copies the card's results back (330–1,150 ms a frame, mostly its own work) and the heap pass (up to 900 ms) | Texture refreshes no longer wait for remapping, by default |
-| 8 | The cutscene: faces, hair, skin, police lights drawn | 1.7–4.5 fps on the screen, frames of over 300 draws 612 ms median | With `VICTORY_HEAP_WORKER=1`: the heap pass 62 ms median against 154 (slowest 146 against 904); frames of over 300 draws 612 ms median, 1,180 slowest (689 and 2,427 in run 7). Copying back is now the largest cost: 250–314 ms a frame, 50–100 ms of it waiting for the card | The texture worker on by default; the copy-back time split by part in the log; diagnostics that keep the shader cache |
-| 9 | The cutscene again (a diagnostics run: 18 shaders translated anew) | frames of over 300 draws 583 ms median | Copying back split by part: fetching and merging the card's copies is ~all of it, 270 ms a frame median (up to 1 s), about 100 MB in ~1,500 pieces merged one by one on one thread; the PC copies 15 ms. The 13 refused 64-lane programs all keep LDS reads and writes in branches where lanes differ, which no exact 32-lane form handles yet; 2 more refused later (the water programs the base fixed with a paired form); the 5 untranslated ones all read a descriptor (`s_load_dwordx4`, dynamic offset) as data. Five frames waited 10-19 s in all for new compute pipelines (summed over threads) | The faster defaults above; the card copies' merge on several threads; fresh translations one at a time; the compute-wait warning also gives the wait on the clock |
-| 10 | The start screen (its "Account picker / Player" prompts), the cutscene, then walking around the prison yard | 5–6 fps walking; frames of over 300 draws 225 ms median | The faster defaults on (`VICTORY_FAST`): frames of over 300 draws 225 ms median against 583 in run 9; copying back the card's copies 54 ms a frame median against 270; the card 50–65 % busy. Now: the card's memory at its line (9.9 of 10.3 GB, 7.6 GB of it textures), so new textures wait ("no room" 73,500 times): the low-detail models and slow loading. Preparing submissions is the CPU's largest cost (write-watch 26, list steps 31, card copies 17 ms a frame median). No device loss | Run 11: `VICTORY_LEVELS_ON_DEMAND=1` alone (textures take memory only for the levels the game holds) |
-| 11 | Walking in the prison; the pause menu and settings drawn right | 5–6 fps walking; frames of over 300 draws 195 ms median | `VICTORY_LEVELS_ON_DEMAND=1` alone: 3.0 GB of the card not allocated for texture levels the game does not hold; textures turned down for room 58 times (73,500 in run 10); no texture without a level, no device loss | Levels on demand among the faster defaults; the 28 refused 64-lane programs tried in the exact paired form first; a trace of the 5 untranslated programs' descriptor use |
-| 12 | The world as in run 11, a 15-minute session | 5–6 fps; frames of over 300 draws 171 ms median | Whole-page refreshes on (`VICTORY_REFRESH_PAGES=1`): frames of over 300 draws 171 ms median against 195, p90 401 against 634; copies 47 ms and 89 MB a frame against 52 ms and 104 MB. The exact paired form made 2 of the 28 refused 64-lane programs (26 still refused). The trace of the 5 untranslated shadow-ray programs: each reads only the first two dwords of a descriptor it picks from the heap by a computed index, as an address. No device loss | The address of each heap slot's view kept by the host beside its stride, so the four 32-lane shadow-ray programs can read it (the shader cache is translated anew once); five more switches the base or its forks measured as gains among the faster defaults (`VICTORY_SETTLE_ROOM`, `VICTORY_LOOKUP_CACHE`, `VICTORY_PARALLEL_REFRESH`, `VICTORY_CARD_SYNC_BATCH`, `VICTORY_REFRESH_PAGES`); the merge under flights' writes a copy a page, not one per changed run |
-| 13 | The prison cell block and yard (start screen, cells, window), 13 minutes; the shader cache translated anew all run (translator changes) | 4-5 fps in the cells once translation calmed | **A bug of ours:** the 64 programs that test rays (the 5 shadow-ray ones among them) did not translate ("not a DXBC container": the cache's converter was handed the new ray-test key with the container), so the shadow fix went untested and those passes were dropped. With translation running all run, frames are not comparable with run 12's: once it calmed (23:06-23:08), 4,600-6,900 draws at 186-266 ms (run 12: 166-201 ms at 4,000-9,000). Of what changed: "lists in the air" waits 0 ms (22.5), the asking and the merge under flights 9 ms (24); `VICTORY_DIRTY_4K=1` copied 27.8 GB as written 4 KiB pages where whole pages were 68.7 GB; copying back 85-100 ms (70), and the title waited longer to submit (43 ms of the card's idle time, 13). No device loss; no stall of the main thread | The converter takes the container after both keys (unit-tested) |
-| 14 | The prison: intro cutscene, cells, corridor, yard window, the counsellor's office, the pause menu and settings; 14 minutes, the shader cache warm | 4-5 fps in the cells and corridor, 30 fps in menus | Warm frames of 4,600-6,900 draws 221 ms median (run 13: 186-266 once translation calmed): preparing 102 ms (copies 47 ms, 76 MB), copying back 96 ms. The new split of the copy-back: of 180 ms a frame of card-copy merges (all threads), 139 ms is the write back into title memory, most of its stretches one kernel write per run of words. The 4 32-lane shadow-ray programs now translate and have pipelines (the 64-lane FullAdaptive one stops at a lane mask the translator cannot take yet); the title dispatched none of them in this run (with no ray-tracing structure built), and the 388 draws a frame dropped for the builder are its own stages. Our threads above normal priority: 221 ms against 253 at normal. `VICTORY_DIRTY_4K=1`: 35 GB copied as written 4 KiB pages instead of 69 GB. PlayStation pad: 20 HID devices seen, none of them Sony. No device loss | Writes back into title memory in place (`VICTORY_WRITE_PLAIN`); the pad scan lists every device and reads a hidden pad's numbers from its path |
-| 15 | The cutscene in the bar, the prison cells, corridor and day room; 12 minutes | 5-7 fps in the cells, 14 fps on dark loading frames | Writing back in place (`VICTORY_WRITE_PLAIN=alt`, 20 s each way): frames of 3,000+ draws 193 ms median in place against 215 through the kernel, copying back 66 ms against 97; about 130,000 stores in place a frame, none faulted. Whole run: 203 ms median (run 14: 216-221). With `VICTORY_DIRTY_4K` off the blocky squares on hair are gone (runs 13 and 14 had both). The new storage split: requests into physical pages spend 150-500 ms each telling the GPU side before and after the write, and the queue behind them waits 1-8 s for a worker (late people, faces and buildings in the bar). VRAM 10.2 of 10.8 GB | Merges' runs stored and counted once a stretch; the own-view store copies outside its lock; the write-watch guards' lock timed by the place that takes it |
-| 16 | Loading, the cells and day room; 10 minutes, nothing switched but the builder off | 6.5-7 fps on screen, 8.2 at best; world frames 168 ms median (6.0 fps) | Copying back 43 ms a frame (run 15: 76, run 14: 97), written back 47 ms on all threads (118): the in-place and batched write-back. Preparing 97 ms and the card idle 85 ms a frame are now the bulk. The guards' lock: `writing` waited 49 ms a frame, the fault handler 44, while guarding held it 21. Storage stalls halved (requests over 1 s: 17, run 15: 71; wait for a worker 1.1 s, 2.3) | Writes told before they land skip the guards' lock when nothing there is guarded (`VICTORY_GUARD_MARKS`) |
-
-**Why the picture is dark:** the game lights much of its scene with ray tracing (bounce light, lamp
-and sun shadows). With the builder off nothing is traced, so whatever direct light does not reach is
-black (the gta6 base sees the same on its PC, below). Texture slots also wait for room on a full card
-(about 20,000 in run 5; run 295 of the base found the same). The black faces of runs 5 and 6 were textures held back by the
-remap wait: drawn in run 7.
-
-**The start screen:** it works. Run 10's screenshot shows the game's start screen with its "Account
-picker (Y) / Player (A)" prompts on a plain dark background; press A (Enter) to go on. Run 1's extra
-menus were the first-boot screens, which only show once. The menu in the world is the pause menu (Esc).
-
-**What limits the frame rate now:** CPU-side work after the remap wait was removed (run 7): copying the card's results back into the game's memory (run 9: 270 ms a frame, nearly all of it the ~1,500 pieces of the card's buffer copies merged one by one on one thread, now spread over several), and preparing submissions (each 30–55 ms a part: write-watch, list steps, refreshes, card copies). The card itself is busy only part of each frame (about 25 % in run 9's world frames).
-
-## Status of the gta6 base on its tester's PC (fxceless; inherited, 2026-11-27, 03:45 UTC)
-
-The rest of this section is the base fork's own record, kept as it was: another PC (i7-14700KF,
-RTX 4070, 32 GB) and, where it says so, its own switch set, not Defeat's defaults on the owner's PC.
-
-**Playable, slowly: about 11 world frames per second at the first boat mission at 1,500 to 3,300
-draws (usual frame 88 ms), 8.5 at 3,300 and more (115 to 120 ms); the console runs 30. The card is no
-longer the limit (53 to 66 ms a frame, the submitting thread waits for it about 0 ms); the thread that
-prepares submissions is (65 to 87 ms a frame at work). The
-open water now shows waves and the sun's path with no black patches. The tester has played from the opening through the prologue and past
-the first boat mission. The graphics card is still lost now and then 30 to 50 minutes into a session,
-before the title's next save point; cause not known yet. Shadowed areas are still black.**
-Tested on one machine: Windows 11, Intel i7-14700KF, NVIDIA RTX 4070 12 GB,
-32 GB RAM. The Series X profile is used throughout.
-
-| Stage | State in this fork |
-|-------|--------------------|
-| Boot, menus, start screen | works, 30 fps (as upstream) |
-| Opening cutscene | plays from start to finish, in order, lit: title cards, credits cards, night and dusk shots |
-| Saves | the game autosaves a checkpoint and loads it again; test runs continue from the last checkpoint |
-| The prologue and the first missions | play: characters, textures, sky, sunlit exteriors, vehicles and boats; HUD, pause menu and pad input work. Played past the first boat mission (2026-11-25) |
-| Water | **2026-11-27: no black or grey patches on open water** once the two 64-lane water programs (5dc3b25986622949, 6f225b641c5b0708) are no longer forced into the wave-wide form (leave them out of `VICTORY_WAVE_WIDE_ONLY`). Before: right since `VICTORY_TEXTURE_BACK=1` (pull request #999): boats float, the surface is lit (blue, waves, the sun's path). Without it boats sink and the mission fails |
-| Light in shadow | missing: the game's ray-traced bounce light and ray-traced lamp and sun shadows do not run yet, so anything the sun does not hit directly is black |
-| Frame rate in the world | **2026-11-26 evening: usual world frame 131 ms at 3,300 to 4,100 draws with the card at 80 ms a frame (card hashing a group of 64 threads a piece, now the default; 149 ms and 108 ms of card without it, run 349).** Earlier: 8.2 to 8.6 world frames a second at the first boat mission at 3,000 to 5,000 draws, 9.5 over a whole standing run** (runs 311, 312, 315, 316: frames counted only where every frame is a world frame, not fades or loading screens), with the texture pass on its own thread (`VICTORY_HEAP_WORKER=1`; 6.2 to 6.7 without it). 10 to 14 fps at 500 to 1,500 draws. The thread that prepares submissions is the limit (about 70 ms of a usual frame); the card is at work about 9 ms. It started at 3 to 6 seconds a frame. Measured with the switch set in `diagnostics/README.md`; the defaults are slower |
-| Stability | **the card is lost after 30 to 50 minutes of play**: Windows reports the device removed (0x887A0005) with no driver event and no freeze, twice (runs 277 and 279); once a hang after 6 minutes with two driver events (run 276). Cause not known. In the tree to find it: crash tracing cheap enough to leave on (`VICTORY_D3D12_DRED=faults`), the memory at the moment of a loss, and a cap on oversized constant views (an invalid call another tester's card answered with a removal) |
-| Memory | about 23 to 27 GB of the PC's 32 GB and 9.2 to 9.6 GB of the card's 10.3 GB budget while playing |
-
-### Newest (2026-11-27, 03:45 UTC)
-
-- **The ray-tracing structure builder runs** (`VICTORY_BVH_BUILDER`, now on by default; `=0` turns it
-  off): its last three programs, the group prefix sums, translate (a shared-memory read at a uniform
-  address counts as lane-uniform, after PR #36). **Known problem: about 30-40 s after the builder
-  starts, the title crashes on a write to address 0 (two runs, with and without
-  `VICTORY_BVH_QUARANTINE`).** Until that is traced, set `VICTORY_BVH_BUILDER=0` to play.
-- **Water:** the two water programs run in the paired wave64 form (pull request #1419 plus exact
-  reductions here; set `VICTORY_WAVE_PAIRS_ONLY=5dc3b25986622949,6f225b641c5b0708`,
-  `VICTORY_WAVE_PAIRS_FP32=non-ieee-rne-ftz`): the water has its green colour. The tile start values the
-  corner thread skips on an early return are now set by every thread first (`VICTORY_LDS_INIT_HOIST=0`
-  off), for the flickering dark tiles; not yet confirmed in a game run.
-- **New, off by default:** `VICTORY_GPU_DETILE` (textures detiled on the card), `VICTORY_INPLACE_CONSTANTS`
-  (the title's constants heap read by the card in place; did not open in its first run),
-  `VICTORY_PATCH_LEAN`, `VICTORY_DUMP_REFUSED=<dir>` (saves shaders that do not translate).
-
-### Earlier (2026-11-27, 01:20 UTC)
-
-- **The flights are no longer settled for title bytes changed under shader writes
-  (`VICTORY_MASKED_PATCH`, on by default):** a page with more changed runs than the merge's cap goes
-  to the card as a masked patch (offset, byte mask, value per dword) after the flights. In an on/off
-  split: waiting for the card 1 to 2 ms against 11 to 32, the usual frame 10 to 15 ms shorter.
-- **Indirect mesh draws are launched by an amplification stage (`VICTORY_MESH_LAUNCH`, on by default,
-  after pull request #1381):** no clamp pass before each record; the card 5 ms less a frame in an
-  on/off split. The translated mesh shaders follow the same switch (shader caches must be rebuilt).
-
-### Earlier (2026-11-27, 01:00 UTC)
-
-- **Measured (one run, 3,300 to 4,100 draws): usual world frame 101 to 105 ms, the card 58 to 61 ms**
-  (113 and 71 before). In it: the fast-math flag by default with `VICTORY_SHADER_FAST_BITS` 24 (no
-  signed zeros, reciprocal; NaN and infinity tests kept: no black blotches in the same shot that had
-  them with all flags), merge runs 4,096, joined copies, plain fills and step index on, 512 MiB of
-  scratch spares, joins of 16 parts and 128 lists, the texture checks ahead on 8 threads, pipeline
-  workers the logical processors less 4 (4 to 14), and open gather segments that outlive dispatches
-  until a barrier of the title's or the next indirect draw (`VICTORY_SEGMENTS_ACROSS`, on; measured
-  -3 ms of card and frame in an on/off split).
-- **Card losses:** three of them (one tonight 16 minutes into play) came 30 to 80 ms after the first
-  build of a `CS_RaytracingResolve` program (3 to 6 s each to make, and the pipeline library refuses
-  to keep them). `VICTORY_DENY_PIPELINES_FILE=<file>` skips the pipelines of the hashes in a file;
-  `diagnostics/deny-raytracing-resolve.txt` lists all 1,000 of that family. With ray node tests
-  answering "no hit" they have no hits to shade. Not yet proven over a long session.
-
-### Earlier (2026-11-27, 00:30 UTC)
-
-- **Measured (one run, 3,300 to 4,100 draws): usual world frame 113 ms, the card 71 ms** with the
-  wide raw loads guarded at a view's end, the fast-math flag off, the 4 MiB window grid, joins of 4
-  parts and 48 lists, texture room 90 % with 3,072 MB kept for targets, and the kept thread pool.
-- **Water:** the black and grey patches came from forcing the two water programs into the wave-wide
-  form. Left out, open water shows waves and the sun's path.
-- **Translator (shader caches must be rebuilt; keep `early-pipelines.txt`):** wide raw loads are on by
-  default and fall back to one load a dword where four would pass a heap view's end; `ds_bpermute`
-  reads within its own 32-lane half (after Belobug PR #363); pixel-shader quad swizzles read through
-  quad operations (after Belobug 03629f3f); a helper lane's first-lane read is its own value (after
-  upstream 0601955); NaN tests are made on the bits; `VICTORY_SHADER_FAST_BITS` picks the fast-math
-  flags (still off: all flags gave black blotches); ray node tests answer "no hit" by default
-  (`VICTORY_BVH_NO_HIT=0` off).
-- **Merged by hand:** #1397 (paired wave64 lowering, off; per program with `VICTORY_WAVE_PAIRS_ONLY`;
-  both water programs are refused by it today: "a floating-point reduction without an exact paired
-  tree"), #1399 (one GPU-write step per range per list), #1400 (lock-free empty slots, one-block
-  write faults, root constants on the stack), and a switch for #1392 (`VICTORY_NO_WAIT_PARTIAL=0`).
-- **New, off by default:** `VICTORY_CARD_FILLS` (constant buffers and copies where shaders wrote, on
-  the card; measured worse: usual frame +11 ms, card +6 ms), `VICTORY_MESH_LAUNCH` (#1381's idea,
-  from its HLSL), and a kept pool for the texture checks ahead (`VICTORY_KEPT_THREADS=0` off).
-
-### Earlier (2026-11-26, 23:15 UTC)
-
-- **Card hashing a group of 64 threads a piece is now the default (`VICTORY_CARD_HASH_WIDE=0` for the
-  old form):** the card's time a frame 80 ms against 108 ms at 3,300 to 4,100 draws, the usual world
-  frame 131 ms against 149 (two runs, different moments of the same mission: approximate).
-- **`VICTORY_TILES_SMALL_WHEN_FULL_MB` is 512 by default:** without it one run showed 612 textures black.
-- **Merged pull requests:** #1366 (failed fence waits are reported instead of passing as done), #1376
-  (texture read-backs re-registered after the title reuses their memory), #1380 (`clzero` on a guarded
-  line goes through the guard), #1367 (scratch chunks reused at any size; the spare cap is kept at 128
-  MiB here, `VICTORY_SCRATCH_SPARE_MB` raises it), #1392 (a never-filled texture with missing pages
-  is read with zeros for them), #1352 (`VICTORY_SPREAD_LEAN`, on by default on NVIDIA cards in this fork, off on others), #1312 (a dispatch waits for its
-  compute pipeline: dark lamps after a fresh cache), and earlier today #1320, #1321, #1336, #1353.
-- **Translator:** raw loads ask only for the dwords that are read; `VICTORY_SHADER_OPT` bit 128 writes
-  the float operations with the fast-math flag (off: it puts black blotches on skin and
-  clothes, two runs with it and none without; the driver may fold the title's NaN tests away); a lane branch that only raises an LDS flag runs as two host waves (`VICTORY_LDS_FLAGS=0`
-  off).
-- **After a translator change keep `early-pipelines.txt`:** it holds keys only. Without it the first
-  minutes in the world are black while about 1,000 pipelines are made.
-
-### Earlier (2026-11-26, 11:50 UTC)
-
-- **Measured twice: a submission's texture checks side by side on the helper threads
-  (`VICTORY_PARALLEL_REFRESH=1`):** 8.7 and 9.4 ms less of the preparing thread's work a frame at equal
-  draws (two launches, switched on and off every 20 s); the checks run 3.6-3.8 times side by side.
-  With `VICTORY_SETTLE_ROOM=1` that is about 20 ms off that thread.
-- **Found: the frame's wall is now the graphics card.** With both on, the preparing thread works about
-  60 ms a frame at the boat but the card runs 84 to 128 ms a frame (by its own clock) and the frame does
-  not move: the two were nearly equal before. The card's time is spread over about 1,300 pipelines; the
-  translated programs are about 2.4 times the console's instruction count, broadly, with no single
-  cheap pattern. That is where the frame rate has to come from next.
-- **Measured at no gain, left off:** `VICTORY_WIDE_REFRESH`, `VICTORY_VIEW_KNOWN`, `VICTORY_CARD_HASH_WIDE`
-  (card time down, the preparing thread's up by more).
-- **The streaming of models is not held up on our side:** no DirectStorage request took a second; the
-  slowest was half a second. The stand-in models and the haze come from elsewhere (most likely the
-  title streaming per frame at a low frame rate; not proven).
-- The dispatch spread's switch is now `VICTORY_DISPATCH_SPREAD` (`VICTORY_SPREAD` is another feature's).
-
-### Earlier (2026-11-26, 10:40 UTC)
-
-- **Measured: flights get more room before they are settled (`VICTORY_SETTLE_ROOM=1`):** the thread
-  that prepares submissions waits for the card 4.6 ms a frame instead of 17.7 at the first boat
-  mission, 11.5 ms less of its work a frame at equal draws (one launch, switched on and off every
-  20 s). Off by default; the test set turns it on.
-- **Compute dispatches of more than 65,535 groups run spread across z** (after upstream VIctory pull
-  request #2312): the title asks for up to 115,200 groups (one per 32 pixels at 1440p) in a pass that
-  was cut to 65,535, losing 43 % of it. Tested on the card; costs nothing measurable. No visible change
-  yet (the pass most likely gathers ray-traced light, which does not run).
-- **Texture slots that read zeros for good are asked again (`VICTORY_REASK_BLANK=1`, diagnostics
-  builds):** at the boat the slots showing a copy with no level went from about 385 to 0.
-- **BC7 channel rotation only in modes 4 and 5** (upstream VIctory pull request #3111).
-- **Instruments:** reads held for the title's DirectStorage Submit (they wait about 40 ms, so not the
-  cause of the late models), the price of a failed write-watch asking, refreshes that copied nothing,
-  `VICTORY_DENY_PIPELINES` (a pipeline is never built), the ray-tracing builder's pipelines named.
-- **Measured at no gain, left off:** `VICTORY_NEAR_WRITES` (the work moved into the final flush),
-  `VICTORY_SYNC_BESIDE` (the two threads slow each other), `VICTORY_VIEW_KNOWN` (about 2 ms).
-
-### Earlier (2026-11-26, 09:00 UTC)
-
-- **Measured: the texture pass on a thread of its own (`VICTORY_HEAP_WORKER=1`, pull request #1007)
-  raises the world frame rate at the boat from 6.2 to 6.7 to 8.65, 9.50 and 9.53 frames a second**
-  (three launches each way). Still off by default; the test set turns it on.
-- **The legacy multiply-add runs as RDNA 2 runs it** (fused, sources flushed; pull request #1026):
-  the brightest water reflections no longer have black cores. Typed buffer views of 32-bit integer
-  formats are made as floats of the same width so the bits move unchanged (pull request #684).
-- **Instruments:** at a device removal the log now holds the sixteen seconds before it and the
-  pipelines first drawn with lately; the frame log counts world frames apart from fades and loading
-  screens; the placed texture slots are counted by what they show every 5 s (about 500 of 13,500 read
-  zeros at the boat).
-- **Off by default, for tests:** host objects let go on a thread of their own (`VICTORY_REAPER`), the
-  skin-bake draws' own textures uploaded before the draw (`VICTORY_BAKE_SOURCES`, pull request #1264),
-  slot rewrites let go at once (`VICTORY_RETIRE_LEAN`: measured slower, stays off).
-- This exact tree was played by the tester on 2026-11-26 (the build of runs 315, 316 and 318).
-
-### Earlier (2026-11-26, 02:15 UTC)
-
-- **Measured: `VICTORY_LOOKUP_CACHE=1` (pull request #1237) is worth about 14 ms a frame** on the
-  test machine (run 293, the switch in turn, a fit at equal draw counts: 84 ms + 13.6 ms per 1,000
-  draws, minus 14 with it, plus or minus about 7; the recording threads together 57 ms less). About
-  540,000 asks for a buffer's host copy a frame, 89 % of them answered without the lock.
-- **Measured at nothing:** `VICTORY_HEAP_SYNC_CUT` (run 286: 37 fewer heap pages read a frame, the
-  pass's time unchanged). Left off.
-- **Fixed from Direct3D's debug layer's own words** (runs 283 and 289): a pipeline that blends into
-  an integer render target; a draw whose pipeline declares another render target format than the
-  one bound (a pipeline for the bound format is made, `VICTORY_TARGET_VARIANTS=0` turns that off).
-- **Pull request #1241** (a view of a card-written texture copied even after an upload of the same
-  view) is in. It did not change the black in shadowed areas (run 291).
-- **Still open:** the card is lost 30 to 50 minutes into a session (the memory figures at two
-  losses: 1.3 and 2.0 GB of the PC's 32 free, the process at its largest; another tester reports
-  the same signature with "Kernel memory failure" under the debug layer; not shown to be the cause
-  here). Shadowed areas are black. In a heavy outdoor scene (7,000 to 9,000 draws) the frame is
-  157 to 195 ms.
-- Every run's log goes to `diagnostics/` as soon as the run ends.
-
-### Before that (2026-11-26, 00:00 UTC)
-
-**Written and unit-tested, not yet measured in a game. Every switch here is off by default; the
-numbers are estimates until a run carries them.**
-- **Constant buffer views are capped at 64 KiB** (pull request #911, always on). The title names
-  constant views far larger than the host allows (its author logged one of 1,306,368 bytes); making
-  such a view is an invalid call, and its author's NVIDIA card removed the device for it. A warning
-  is logged once when a view is capped. Whether this is behind the card losses on the test machine
-  is not known yet.
-- **`VICTORY_FILLS_PLAIN=1`** (with `VICTORY_COPY_PLAIN=1`): a list's fills of under 256 bytes are
-  copied in place. There are 8,000 to 12,000 a frame and each was a kernel call of about 400 ns; in
-  place it is about 30 ns (timed offline). Expected: about 3 ms off the submitting thread a frame.
-- **`VICTORY_STEP_INDEX=1`**: the passes over a submission's steps find a step's copy by an index
-  instead of a lock and a search per step (20,000 to 43,000 refresh steps a frame). Expected: 1.5
-  to 4 ms a frame.
-- **`VICTORY_LIGHT_REFRESH=1`** (wants `VICTORY_ABSENT_ONCE=1 VICTORY_ABSENT_MS=told`): a lock-free
-  bit per 64 KiB block that is read-only by the layer's hand and unwritten since; a refresh whose
-  blocks all have their bit is answered with no lock and no kernel call. Hand-ported from
-  avatarmanz/VIctory-7900XTX. Expected, if most askings are of unwritten ranges: the frame line's
-  "copies" 43 to about 30 ms in rooms and 80 to about 57 ms outdoors.
-- **Pull request #1185**: a commit that crosses a 64 KiB block edge now clears both blocks' notes
-  (a fix to `VICTORY_ABSENT_MS=told`).
-- **`VICTORY_D3D12_DRED=faults`** (and `light`): crash tracing cheap enough to play with. The full
-  form cost about 50 ms a frame.
-- **Instruments for the card loss**: at a removal the log now has the process's, the PC's and the
-  card's memory at that moment and the card's peak use since the last line (the memory line was
-  one look in five seconds); a line a second with the peak (`VICTORY_VIDEO_LOOK=0`: none); and
-  what Present answers, which was thrown away.
-- **The fourth loss (38 minutes in, with `VICTORY_D3D12_DRED=faults`)**: removal reason 0x887A0005
-  again, and the runtime reported no page fault address, so it was not the card reading freed or
-  unmapped memory. The three long sessions all ended on the way to the same place in the story,
-  so the trigger looks tied to what is drawn or made there, not to the time played. Nothing in the
-  last seconds of the three logs is found only there (pipelines made, textures made). The tracing
-  cost nothing measurable up to 4,000 draws a frame.
-- **Looked at for the card loss and not found to be the cause**: video memory. In four sessions
-  the card was at 84 to 92 % of its budget throughout and never over it at a sample, the session
-  with no loss as full as the others, and no out-of-memory result in any log. The cause is open.
-- **`VICTORY_BVH_NO_HIT=1`** (a translator change: the shader cache is rebuilt once after this
-  commit): the title's ray-traced passes run although nothing builds their structures, and each
-  node test read whatever bytes lay there. With the switch a node test answers "no hit" and reads
-  nothing, so every ray leaves at its first test and the answer is the same in every run. Not a
-  frame-rate change (those passes cost under 1 ms of card time a frame on the test machine).
-  Whether shadowed areas come out lit by the sky instead of black is not known until it runs.
-  Also pull request #1141 (`VICTORY_WAVE_WIDE=last`, opt-in).
-- `diagnostics/timing-run-295s-2026-11-25.txt`: a 295 s timing run with breadcrumbs.
-
-### Before that (2026-11-25, night UTC)
-
-**Small buffers into the card's memory: about 18 ms of card time a frame gone, 5 ms of frame so far.**
-Tested on the machine above, first rooms, at like draw counts (runs 274 and 275).
-- **Why some compute passes were slow.** A title buffer's host copy under 1 MiB stayed in the PC's
-  memory (about 3,700 of 3,800 copies, 30 MB in all), so every load, store and atomic a shader did
-  on it crossed the bus. The passes that were slow by the thread were small dispatches on such
-  buffers. `VICTORY_CARD_BUFFERS_MIN_KB=64` (with `VICTORY_CARD_BUFFERS_MB=1280`; off by default)
-  puts every copy in the card's memory: the title's lists went from 68.0 to 49.8 ms of card time a
-  frame; single passes from 6.7 to 1.6 ms, from 4.1, 2.7 and 2.0 ms to under 0.3 each. The frame:
-  114.9 -> 109.7 ms. The layer's own send-and-hash lists rose from 11.6 to 23.0 ms (each small copy
-  is hashed over a whole 64 KiB); `VICTORY_CARD_HASH_LEN=1` hashes the buffer's own bytes instead
-  and has not run in a game yet. The card now idles 12 to 40 ms a frame: the thread that prepares
-  submissions is the limit.
-- **`changed_runs` by masks** (the default; `VICTORY_CHANGED_RUNS=0` the old walk, `=alt` in turn):
-  64 bytes at a time as one mask of differing bytes. 3.8 ms less work a frame on the submitting
-  thread at equal draws; the frame's gain is inside the noise. A first form (64 equal bytes, then
-  eight at a time) was a fifth slower than the walk on sparse changes and never ran.
-- **Scalar buffer loads, four dwords a call** (`VICTORY_SHADER_OPT=127`; not in the default 63):
-  the dwords of one console load instruction are read by one call. Whole pack: with the bit off
-  25,635 of 25,635 shaders are byte-identical to the build before; with it on 20,154 change and
-  buffer loads fall by 38 %. Tested on the software adapter, also across a view's end. Whether a
-  card is faster for it is not measured yet.
-- **Pull request #999 merged** (cxy0072019-sketch, porting a patch by Geckomacabre):
-  `VICTORY_TEXTURE_BACK=1` copies textures of the ocean's kinds that shaders write back into title
-  memory, where the title's own code reads them. Off by default. Without it a boat sank here and
-  its mission failed at once (run 275). With it (run 276, both shader caches wiped first): 22,900
-  read-backs landed in six minutes of play and the tester got past that point: the largest step
-  of the day. The same run then ended with the card lost (the driver logged two errors, then
-  "device removed", with nothing of the layer's running on the card at that moment). Why is not
-  known; run 275, the same set without this switch, played twenty minutes without an error.
-- **What the copy-back is worth, measured** (`VICTORY_BACK_READS=alt`, diagnostics builds; run 277,
-  49 minutes of play): 497 GB were copied back from the card into title memory. Of 438,000 stores
-  looked at (one page in 8): 60 % were touched by nothing before the next store, 36 % only by the
-  layer's own refreshes, 3.8 % were written by the title, and 0.19 % were touched by anything
-  else, which is the most the title's own code can have read. So nearly all of that copying serves
-  nobody: not copying back the buffers nobody reads is the next step there.
-- **Run 279: the set that plays best so far.** The switches of `diagnostics/README.md` plus
-  `VICTORY_CARD_HASH_LEN=1`: the water is right (blue, waves, the sun's path), boats float, and the
-  layer's hash lists are about a quarter cheaper a list. That clears the hash length for the black
-  water of run 277, which leaves the grouped loads below as its cause. `VICTORY_ABSENT_ONCE=alt`
-  ran in it too: with it off the layer asked Windows about 690,000 times in twenty seconds about
-  blocks it already knew to be unmapped; with it on (notes kept 100 ms) 40 to 50 % of the answers
-  came from the notes. No frame gain shown yet at 100 ms: frames there are longer than the notes
-  live.
-- **The grouped scalar loads blackened the water** in run 277 (`VICTORY_SHADER_OPT=127`), and stay
-  off. The lead, not proven on the card: one call for four dwords at byte 328 of a 340-byte view
-  asks for a dword past its end, where the default form never reads that dword (its call is dead
-  code); 90 lighting programs have that load. The software adapter reads the three inside and
-  gives 0 for the one outside; what the card does is not tested.
-- **The card was lost twice**: run 276 after 6 minutes (two driver events, then a hang) and run 277
-  after 49 minutes (device removed with no driver event, 8 ms after a sweep let go 150 texture
-  copies). Causes not known. `diagnostics/` holds a scrubbed log of a short run with
-  `VICTORY_GPU_TIMING=1` and `VICTORY_D3D12_DRED=1` for anyone who wants real numbers.
-- **`VICTORY_ABSENT_ONCE=1|alt`** (off): a block of view memory found unmapped is not asked of
-  Windows again for 100 ms. Outdoors those questions were 44 ms a frame of the submitting thread.
-  Not run in a game yet. `VICTORY_D3D12_DRED=1` costs about 50 ms a frame in a diagnostics build.
-- The texture pass's time budget: never reached in the first rooms (about 5 ms a frame); 15 to
-  30 % of the frame in an open-world session. The translator emits no stack slots to promote:
-  registers are SSA values already.
-- Not run in this tree: the unit tests after the merge (the same changes passed them in the
-  working tree they came from: 182 of the graphics crate's, the new shader test both ways).
-
-### Earlier (2026-11-25, evening UTC)
-
-**Update, 2026-11-25 evening: a frame capture built into the layer, and a
-card time that does not add up yet.** No frame-rate gain is claimed; the
-headline numbers stand. (A heavier view of the first room: 122 ms a frame
-at 6,774 draws in run 266. The 97 to 104 ms below are at about 3,850
-draws.) The code of this entry is in the tree.
-- **An outside frame debugger did not work here.** RenderDoc 1.45, loaded
-  through a hook (`VICTORY_RENDERDOC=<path of its DLL>`), ended run 263
-  after about 10 s of loading: an access violation inside its library,
-  then "device suspended" from every host call (its wrapped device; no
-  driver event). The stack showed a streaming program's capture hook
-  making a Direct3D 11-on-12 device on the wrapped device. A MISTAKE of
-  that run: the driver refused the saved pipeline library and the layer
-  saved an empty one over it (366 MB of 3,385 pipelines became 32 bytes;
-  the next run drew black frames at 0.7 to 1.5 frames a second while
-  building them again). Fixed: a rejected library is kept as
-  `host-pipelines.rejected.bin`, never saved over, and with RenderDoc
-  loaded the library is neither read nor saved.
-- **DirectStorage reads wait for the title's Submit** (after upstream
-  VIctory eddde734: its hold and two tests, not its diagnostics). The
-  title fills a batch's page list only right before its Submit; a queue
-  that sent itself when half full started reads into physical pages
-  before that. Run 266: 3 such cases (2,079 reads held of a queue of
-  4,159), no stall, 0 failed page writes, frame time not worse. Faces
-  were right in that one launch; face faults come and go between
-  launches, so a cure is not shown yet.
-- **Processor use, per core and per thread (runs 266, 267): nothing is
-  full.** Of 28 logical processors the machine keeps 6.7 busy in the
-  cutscene and 4.5 in the room, the process about 3.6 and 3.1. The
-  busiest thread, the layer's submit thread, is 42 to 58 % busy; the
-  title's most crowded pinned group is 25 to 29 % full. No look in the
-  room found the render, the submit or a recording thread on a slow core
-  (0 of 1, 0 of 8, 0 of 120). `VICTORY_SPREAD=alt` in the cutscene: 262 ms
-  a frame off, 262 on. The frame is a chain of waits: more cores alone
-  give nothing. Splitting the submit thread's work would use them: it
-  works 83 ms of the room's 122 ms frame (bound: a frame of about 100).
-- **`VICTORY_WIDE_REFRESH=alt`: no gain, dropped** (copies of title memory
-  refreshed on several threads, twenty seconds on, twenty off). Cutscene,
-  run 268: copies 31.2 -> 26.0 ms a frame (17 %) where 10 to 15 ms were
-  predicted. Room, run 269, 10 readings each way: copies 30.6 ms off, 34.1
-  on; submit thread 78.6 against 78.4 ms.
-- **Frame shot: a capture of one frame, built into the layer**
-  (`VICTORY_SHOT=<folder>`; taken when a file named `take` appears there,
-  or at `VICTORY_SHOT_AT=<frames after the first frame of 500 draws>`). A
-  shot holds every command of the frame in order (draws, dispatches,
-  copies, submissions, with list and thread), the card's clock before
-  each command, and a picture of each texture as a pass leaves it. It
-  loads no DLL and wraps no device: only texture read-backs and
-  timestamps, which every run uses already. Hence built in, not outside.
-- With little memory free, a shot takes at most half of what is free
-  above 0.7 GB, and pictures that do not fit are taken in parts from
-  later frames. A shot is exactly one frame of the title: the title
-  records its next frame while the layer still runs this one, and the
-  first form (run 269) held both, so every pass showed twice. It also
-  took 0 pictures: the title uses enhanced barriers and the layer moves
-  textures between states itself; the pictures are now taken there.
-- First shots, run 270 (300 s, 0 errors, no driver event), both in the
-  opening cutscene. Frame 1864: 6,348 lines, 3,618 draws and dispatches,
-  54 pictures of 82 places, then ended early with 685 MB free. Frame
-  2849, complete: 10,334 lines, 7,120 draws and dispatches, 77 of 78
-  pictures. Those looked at are right pictures of the frame.
-- **What the shots say, and what is NOT explained.** Run 270's two
-  frames: the card's time for the title's own commands is 20.1 ms
-  (compute 13.3, drawing 6.3) and 22.0 ms (drawing 11.3, compute 10.1).
-  The older per-list card meter gives the title's lists 57 to 78 ms a
-  frame at that time: 35 to 55 ms more. The shot then got a stamp at
-  every list's start and around the layer's own lists. Run 271's two
-  frames: the title's commands 25.2 and 15.4 ms; the layer's
-  send-and-hash lists 35.0 and 17.8 ms (14 and 8 lists), its compare
-  lists 12.1 and 6.3 ms (13 and 7). The lists it runs before title lists
-  took 36.1 ms in the second frame, but they also hold the shot's own
-  picture copies, not separated yet: the gap is not accounted for. If it
-  is the layer's, the card's ceiling is higher than the "near 20 frames
-  a second" given below, which rests on the per-list meter.
-- **The staging-buffer pool, on and off in turn** (run 270,
-  `VICTORY_STAGING_POOL=alt`, 128 MB kept). On by default; off in test
-  runs since run 224, its first long run, lost the device (cause never
-  found; that driver error had also come up before the pool existed).
-  Predicted: page faults per texture upload from about 100 to well under
-  50, long frames 60 to 115 ms shorter at equal uploads. Measured: 6.27
-  frames a second off, 5.77 on (different scenes; the 7 pairs go both
-  ways). Long frames average 391 ms with 204 uploads off, 421 ms with 310
-  on: 1.92 ms an upload off, 1.36 on, but the texture pass fills its 250
-  ms time budget either way, so frames are no shorter. Page faults per
-  upload: 132.7 off, 128.9 on: prediction not met. No gain shown: not
-  adopted. The frame log's "staging made" counter read 0 with the pool
-  off; it counts now.
-- **Memory, measured.** The process holds about 24 GB, 16 GB of it in
-  memory, on a 32 GB PC. Free: 3.6 GB in the cutscene and 0.9 to 1.8 GB
-  in the room in run 269; 3.6 to 5.3 GB late in run 270 (why they differ
-  is not known). The card is nearly full: 9.0 of a 10.2 GB budget. Title
-  buffers of 1 MiB and more are in its memory in these runs (1,024 MB at
-  most); the 872 copies of what the title's own allocator hands out
-  (vertices, indices, constants: 3.6 GB) are in the PC's memory and read
-  over the bus at every draw. The card has no room for all of them: it
-  would come out of the textures' share.
-- **Some of those copies in the card's memory: fewer long frames, in two
-  launches of two** (`VICTORY_CARD_WINDOWS_MB`, off by default). Run 271
-  asked for 512 MB (124 to 137 copies went to the card), run 272 for
-  2,048 MB (355 copies, 1,356 MB, went there; the layer's own line at 80 %
-  of the card's budget turned the rest down). Both: 300 s, 0 errors, no
-  driver event, pictures right. Frames a second in three stretches of the
-  opening cutscene (20 to 110 s, 110 to 200 s, 200 to 290 s after its
-  first frame), and the share of the last stretch's time spent in frames
-  over 250 ms:
-
-  | run | on the card | first | middle | last | long frames, last stretch |
-  |---|---|---|---|---|---|
-  | 269 | none | 3.95 | 7.49 | 7.59 | 21 % |
-  | 270 | none | 3.93 | 7.99 | 6.68 | 26 % |
-  | 271 | 512 MB | 5.44 | 7.26 | 8.48 | 4 % |
-  | 272 | 1,356 MB | 5.42 | 8.16 | 8.32 | 6 % |
-
-  Textures made again after being let go for lack of room: 5.1 and 6.9 GB
-  in the runs without, 1.9 and 1.1 GB with. That is what the long frames
-  are made of. Why fewer textures are let go is not known: the title's
-  draws cost the card the same per command with and without (+1 %, 37
-  shader sets found in both captures). The price: passes that made no
-  texture for lack of room rose (2,067 and 1,280 without; 2,504 and 3,699
-  with). Four launches, two each way, and earlier launches without it
-  reached 3.4 to 5.1 in the first stretch: a result, not yet a default.
-- **The same copies written straight into the card's memory**
-  (`VICTORY_WINDOW_UPLOAD=1` with `VICTORY_CARD_WINDOWS_MB`, off by
-  default). It needs GPU upload heaps: a resizable BAR, and a driver and
-  a Windows that offer them. The layer asks when it makes the device and
-  says so in the log, and it tries the first such buffer with a plain
-  copy and the kernel's copy and reads it back before any is used. Run
-  273 (closed at 155 s; 0 errors, no driver event, picture right): 368
-  copies (1,400 MB) were one buffer each, with no side in the PC's memory
-  and no pass that sends them up. The PC's memory shared with the card:
-  3.8 GB against 5.7 GB in run 272; free memory 3.2 to 3.6 GB against 1.1
-  to 1.9 GB. Frame rate as run 272, as far as one shortened launch can
-  tell (4.99 and 7.86 frames a second in the first two stretches against
-  5.42 and 8.16). The send-and-hash lists did not fall as predicted (12.3
-  against 13.6 ms a frame at like draws). A memory gain; no speed gain
-  shown.
-- A review of the open pull requests for frame rate found no single large
-  gain. The nearest is #1014 (the card-side compare hashes a piece with
-  64 threads; a tester's claim on an RTX 4080: send-and-hash lists 14.0
-  -> 2.5 ms, compare lists 5.6 -> 1.3 ms). Not measured here.
-- **Next, none of it measured yet:** (1) the translated shaders: each
-  shot ranks them by card time, and the title's own commands are 15 to 25
-  ms of the card's frame; (2) the shot's own copies taken out of the
-  lists the layer runs before title lists, so the card's frame adds up;
-  (3) what shaders wrote left on the card until the title's processor
-  reads it, where today every changed piece is fetched back every frame
-  (42 to 70 MB): being studied, nothing built; (4) a faster byte compare
-  for the submit thread (8 and 64 bytes at a time; its test of 20,000
-  cases against the byte-by-byte walk passes; not in a run yet); (5) the
-  texture pass's time budget, 250 ms against less. Title buffers in
-  place (`VICTORY_INPLACE`) were listed as the large step; a closer look
-  at this PC says otherwise: both ways of opening title memory to the
-  card pin it in a PC with 1 to 5 GB free, and the buffer that carries
-  the most traffic cannot be opened at all. A memory step and a modest
-  time step, not the road to 30 frames a second by itself.
-
-### Earlier (up to 2026-11-25 afternoon)
-
-**Update, 2026-11-25 afternoon: what a frame is made of, measured, and two
-changes that hold.** First rooms, about 3,850 draws a frame: 104 ms a frame
-(9.6 frames a second) with the first two changes below, 97 ms (10.3)
-with all of them, from about 120 ms in the morning. Still far from the console's 33 ms.
-- How the title paces itself (new meters in `fence.rs` and
-  `console_insn.rs`): it never asks for an event. Each frame begins with
-  one small submission and a signal, and a title thread then waits for
-  that fence value by reading it in memory with `monitorx` / `mwaitx`
-  (AMD-only: about 280,000 emulated exceptions a second on an Intel
-  processor, all from this wait). The value is set when the layer has
-  finished the whole frame before. So a frame is the time the layer needs
-  for one frame's burst of submissions plus about 20 ms of the title's
-  own; putting presents behind the line, or giving the title's threads
-  more processors, changes nothing (both measured).
-- Two walls stand side by side and both are full: the layer's submit
-  thread (about 95 ms of a 120 ms frame in the morning) and the card
-  (about 102 ms busy, by a timestamp pair around every host list:
-  `cardmeter.rs`). Taking time off one alone moved the frame by 0 to 7 %.
-- `VICTORY_JOIN_PARTS=1` (off by default): the title's lists wait for
-  memory values, which cut its ~15 submissions a frame into ~29 parts;
-  parts that follow one another now go to the host as one submission
-  (9 a frame), the same lists in the same order. About 6 %.
-- `VICTORY_BACK_OWN_VIEW=1` (off by default): what shaders wrote goes
-  back into title view memory through a view of the layer's own, so the
-  copy that wrote it is not read in again. About 9 % (submit thread 93 ->
-  81 ms a frame, 104 -> 80 MB a frame checked). A CORRECTION: an earlier
-  run seemed to show washed-out frames with this switch; the same frames
-  turn up in about 6 of 21 runs with no switch at all (cause not known),
-  and `VICTORY_BACK_OWN_CHECK=1` counted 0 stores gone astray in 1.36
-  million.
-- Where the card's time goes now (`VICTORY_CARD_METER_PIPELINES=1`, a
-  table by pipeline): no pass is large. About 82 ms of the title's lists
-  are spread over ~3,400 pipeline bindings a frame; ~2,400 of the
-  indirect commands still get a clamp pass of the layer's with draw
-  windows on (960 are compute dispatches; about 1,000 are mesh records
-  the title keeps scattered through a 100 MB argument buffer, which a
-  window of records at one step cannot serve).
-- `VICTORY_INDIRECT_GATHER=1` (off by default): a single indirect record
-  that misses its window gets a slot in a scratch buffer of its list, and
-  the list's prelude clamps all such records in one pass by a table of
-  their offsets (the clamp shader with a gather bit), where each draw had
-  a compute pass of the layer's in front of it. Proved by clamping every
-  gathered record again at its draw and comparing on the card
-  (`VICTORY_INDIRECT_WINDOW_CHECK=1`): 7.9 million records, none differed.
-  About 600 of the ~1,600 draws that missed a window are served; the
-  others come after a dispatch or a storing draw in their list. With
-  `VICTORY_CARD_REHASH_RUNS=1`: 104 -> 97 ms a frame (10.3 frames a
-  second at 3,800 draws).
-- What the card's time is now, added up: of ~87 ms busy in a 97 ms
-  frame, the layer's own lists are ~19 ms and its clamp passes 10-20 ms;
-  about 50 ms are the title's own ~30 compute passes and its geometry at
-  2560x1440 as translated. With every pass of the layer's gone, this
-  scene would still be near 20 frames a second on this card: the
-  translated shaders have to get cheaper too. (Open again: see the evening update above.)
-- The frame rate is drawn into the top left corner of every frame shown
-  (`fpsbox.rs`; `VICTORY_FPS_COUNTER=0`: not): the window's caption has
-  it too, but a capture of the picture does not carry the caption.
-- `VICTORY_COPY_CHANGED=1` (off by default): a refresh of a copy in the
-  card's memory sends on only the 256-byte chunks that differ from the
-  copy's CPU side. The layer's sync lists on the card fall from 12 to 8
-  ms a frame, the submit thread pays 3.6 ms for the compare and is then
-  the limit: no net gain yet.
-- HONEST LIMIT OF ALL THE ABOVE: those numbers are the scene standing
-  still. While the camera moves the title streams assets, and about half
-  the time goes to frames of ~490 ms in which the card is idle for ~330
-  ms: some 850 remaps of title memory, 260 texture uploads and 450 disk
-  reads in one frame. That is the next thing to measure and cut.
-- The dips while moving, measured (a sampling profile of the opening
-  cutscene, and a 370 s play session): the mean is 4.5 frames a second,
-  with half the time in frames of ~490 ms in which the card is idle for
-  ~330 ms. In those frames the title's render thread waits for its own
-  jobs, not for the layer. One of those jobs is the title's page-mapping
-  copies (`CopyPageMappingsBatchX` -> `xmem::map_alias`): the title maps
-  every streamed texture page into its tiled heap, a range of one page
-  each (over 4,096 different pool pages in a minute, about 850 pages in
-  a frame that streams), and each is a view taken away and a view mapped
-  in the kernel: 32 ms of every cutscene frame, 246 ms of a streaming
-  frame, nearly all of it waiting on the process's address space.
-- Two attempts on that, both taken back out: leaving alone pages that
-  already show what is asked (counted: there are none, every remap is a
-  real change), and mapping pool pages in a row as one view (1.8 to 4.2
-  pages a view, remap time 140 -> 79 ms a frame, BUT faces came out black
-  or red and one run drew garbage in 3 launches of 3, against none in 6
-  launches without it). Reverted; why a longer view breaks texture
-  streaming is not known yet.
-- Measured and found to give nothing (switches left in, off):
-  `VICTORY_REFRESH_ONCE`, `VICTORY_ASYNC_PRESENT`, `VICTORY_VIEW_KNOWN`,
-  `VICTORY_SPREAD`, `VICTORY_QUEUE2=3`, `VICTORY_WINDOW_JUMP`. Each has an
-  `=alt` form (twenty seconds on, twenty off, each change said in the
-  log) so that one run measures both in the same scene.
-
-**Update, the same night: the first room now renders right on the test
-machine** (walls, textures, people, lamps), at 190 to 450 ms a frame (2 to 5
-frames a second): the picture work has caught up, the frame rate has not.
-What did it, on top of the list below:
-- Descriptor records the title copies into its heap as plain bytes are
-  mirrored before every submission (pull request #305 by Flyander, after
-  upstream VIctory 86a5ed6). Measured here: about 40,000 records a frame
-  that no call had announced; their host slots were empty or stale.
-- A buffer view that does not start on an element of its buffer's host
-  copy gets a copy of its own bytes instead of being refused (after
-  upstream 86a5ed6): 3 to 6 such views a frame.
-- Room on the card is kept for the render targets and buffer copies a
-  world makes in its first frame: 98 buffer copies are made (945 MB) where
-  the runs before made 1, and the processor no longer compares 550 to
-  710 MB a frame looking for shader writes (25 MB now).
-- Levels on demand ran on the card for the first time
-  (`VICTORY_LEVELS_ON_DEMAND=1`, still off by default; with the fixes of
-  pull request #747 by AscilCH): 3.1 GB of the card not allocated for
-  texture levels the title does not hold, no device loss.
-- Guarded blocks under storage writes are opened by default; 14 more
-  shader programs translate; a program is translated with first-half
-  interpolation pairs only if it was refused for one (with that on for
-  every program, 8,551 working pixel programs came out changed).
-- Frame rate, first cuts on the processor side: the descriptor sync uses a
-  cheap fingerprint and leaves draw-table slots to their draws (the pass
-  over the heap went from 70-220 ms a frame to about 3), and memory the
-  guards already hold is not asked of the write watch (pull request #670
-  by Jonirulah). Card copies' pieces can come down inside their own
-  flights (pull request #648 by Jonirulah, `VICTORY_CARD_FETCH_INFLIGHT=1`,
-  off by default: the copy-back thread's wait went from 181 ms a frame to
-  0 here, but the card got busier, so no gain is claimed yet). The frame is
-  still 250 to 380 ms: the card is the limit now, most of it the
-  per-record clamp before each of some 6,700 indirect draws a frame.
-- Pull request #220 (cheaper indirect draws) is IN this tree now, its
-  windows off by default (`VICTORY_INDIRECT_WINDOW=1`). History, so nobody
-  repeats it: with windows on it lost the device three times here. Its own
-  checker (`VICTORY_INDIRECT_WINDOW_CHECK=1`) then showed one list drawing
-  90 records of 2^24 vertices from a window, where the per-draw path lets
-  eight through; a record of 2^23 vertices an instance or more now runs
-  empty. Since that fix: eight runs with windows on, seven without a
-  device loss and one that lost the device 44 s into the world (cause not
-  found; see the driver watch below). One earlier loss after the fix had
-  the in-flight fetch (#648) on as well; do not combine the two. The
-  in-flight fetch itself measured slower here in two runs and stays off.
-- Frame rate, second night (an RTX 4070; the first room went from about
-  3.5-4 to 6-7 frames a second with ALL of the switches below; the
-  defaults are unchanged and give about 4.5-5):
-  - `VICTORY_ASYNC_SUBMIT=1`: submissions are prepared and sent by a
-    thread of the layer, not by the title's render thread, which a
-    profile showed inside the submit path for 257 of 292 ms a frame.
-  - `VICTORY_QUEUE2=1`: fetches of what shaders wrote go to a copy queue
-    (brought back, with the fix for a piece fetched beside a later
-    flight); the copy-back thread's wait fell from about 125 to 7 ms a
-    frame.
-  - `VICTORY_INDIRECT_WINDOW=1`: see above.
-  - `VICTORY_TEXTURE_NO_WAIT=1`: a texture refresh no longer waits while
-    the title remaps memory; the loading phase had 5 readings over a
-    second where it had 18.
-  - `VICTORY_MERGE_GAP=64 VICTORY_MERGE_RUNS=4096`: title bytes put in
-    under flights' shader writes are joined over small gaps (NOT exact:
-    read the comment at `merge_gap` before using it).
-  - On by default: fills of upload memory and read-only buffer copies no
-    longer wait for flights and are checked against what the flights then
-    wrote (`VICTORY_FILL_WAIT=1` waits as before; no mismatch in any run
-    so far); up to 512 idle host lists and texture staging buffers are
-    reused instead of made and freed every frame.
-  - `VICTORY_PROFILE=1` (diagnostics builds): a sampling profiler inside
-    the layer; it is how the above was found.
-- Frame rate, third session: measuring first (same RTX 4070, first room).
-  - A frame log (`VICTORY_FRAME_LOG`, on in diagnostics builds): every
-    frame's length, and for the usual frame and each long one what it was
-    made of (the render thread's time in the present call, the submit
-    thread's work, copies, copy-back, recording, texture work, faults,
-    disk). A card meter (`VICTORY_CARD_METER`) adds the card's time by
-    kind of list from a timestamp at each list's start and end.
-  - What they showed, windows off: a usual frame of 136 ms; the title's
-    render thread waits 77 ms of it in the present call for the submit
-    thread, which works 118 ms (copies of title memory 41, copy-back 40);
-    the card is 85-98 % busy, of about 130 ms a frame 16 ms in our lists
-    that bring card copies up to date, 10 ms in our compare lists and 102
-    ms in the title's own lists with the per-record clamp. Frame time is
-    linear in draws (about 32 microseconds a draw all-in): the title draws
-    about twice as much on some frames, which are the long ones.
-  - The regular dips of earlier test runs were the test harness: a saved
-    frame (`VICTORY_CAPTURE_WORLD`, every 8th world frame) is read back
-    and written as a PNG inside the present, 235 ms each.
-    `VICTORY_CAPTURE_WORLD_EVERY=64` for runs that measure speed.
-  - `VICTORY_INDIRECT_WINDOW=1` measured again with those instruments. A
-    CORRECTION: the first figures given here (6.0 against 8.9 frames a
-    second) compared two runs that stood in different scenes during the
-    measured window (about 4,300 against 1,550 draws a frame) and are
-    withdrawn. Compared at equal draws, by a line fitted to each run's
-    frame times against its draws per frame: windows off 145 ms at 4,500
-    draws and 271 ms at 10,000; windows on with `VICTORY_COPY_PLAIN=1`
-    124 ms and 211 ms. On screen: 7-8 frames a second in the first rooms,
-    10-12 in their lighter views.
-  - A driver watch (on by default; `VICTORY_DRIVER_WATCH=0` off): the
-    layer subscribes to the system's event log and logs every entry of a
-    display driver as it is recorded; the first one turns draw windows
-    off for the rest of the run. Every device loss here had such entries
-    2.7 to 55 seconds before the device was removed, and no run without
-    them lost its device.
-  - A copy between two title textures that share one host texture is no
-    longer recorded (the host does not allow a texture copied onto
-    itself): 402 of them in a five-minute run.
-  - The list of shader-visible heaps is a reader-writer lock (recording
-    threads waited 48 ms a frame, summed, behind the heap sync); the heap
-    sync looks at a changed page's records under one lock, fingerprint
-    first; guarded view memory is left out of a submission's write-watch
-    askings ahead (after triippywhale).
-  - `VICTORY_COPY_PLAIN=1`: copies of title memory made in place by this
-    process, with a handler that falls back to the kernel's copy on a
-    missing page. Its first form also took the layer's one-byte "is this
-    page there" reads, 1,000 to 1,300 faults a frame, and won nothing;
-    reads under 256 bytes now stay with the kernel and a source that
-    faulted is left alone for two seconds (4 to 9 faults a frame). The
-    submit thread's kernel time fell from 44 to 20 ms a frame; the
-    picture is the same.
-  - The layer's submit and copy-back threads ask for the fast cores of a
-    hybrid processor (`VICTORY_FAST_CORES=0`: not): the submit thread was
-    found on a slow core in 6 % of its looks, now in none of 21,059.
-    `VICTORY_DISK_CORES=slow` (off, not measured) asks the slow cores for
-    the DirectStorage workers, which are as many as the logical
-    processors and free to run anywhere.
-  - Behind switches, built and unit-tested, not yet shown to pay:
-    `VICTORY_REFRESH_ONCE=1`, `VICTORY_VIEW_KNOWN=1`,
-    `VICTORY_BACK_OWN_VIEW=1` (picture to be checked),
-    `VICTORY_ASYNC_PRESENT=1` (the present goes behind the queue's line;
-    no gain while the card is the limit).
-  - Tried and refused: `VICTORY_BVH_HOLD=1` holds back the 64 programs
-    that walk ray-tracing structures nothing has built; the picture loses
-    its indirect light with it, so it stays off.
-  - The process opts out of the system's efficiency mode
-    (`VICTORY_EFFICIENCY_MODE=1` leaves it); on a hybrid processor the
-    frame log found the title's render and recording threads on fast
-    cores in every look of a run, and the layer's submit thread on a slow
-    core in 6 % of its looks.
-  Still open: the per-record clamp is most of the card's time, and the
-  copies between the PC's memory and the card's are most of the submit
-  thread's; the cause of the one device loss with windows is not known.
-  A first play session past the first rooms reached the open world and
-  lost the device there with no driver entry (reason "device removed"):
-  the card had no room for new textures from the opening cutscene on
-  (9.2 of a 10.3 GB budget on a 12 GB card; 2,073 passes made no texture
-  for lack of room; 44,613 textures let go and made again in 13 minutes).
-  Cause of that removal not known either.
-- Known and counted, not fixed yet: an indirect compute pass asks for
-  about 77,500 thread groups in x where one dispatch runs 65,535 (the
-  rest is cut off).
-
-Memory sync between the title's memory and the copies on the card:
-- **A write through one view of a physical page is seen by the copies taken
-  through its other views** (`VICTORY_VIEW_GUARD=0` turns it off). The title
-  shows one page at several addresses and a copy was guarded at one of them
-  only. Measured on the test machine: 0.8 to 1.0 million such writes in a
-  five-minute run, every one of which used to leave a copy stale. Since it
-  went in, the first room had its walls in the later frames of 4 runs out of
-  4 (2 of 5 before); the room's very first shot still comes up without walls
-  in some runs.
-- Kernel reads into title memory are read beside and copied in, so a block
-  guarded again in between no longer fails the read.
-- Writes of the storage layer into physical pages are counted where the title
-  has those pages mapped (10,000 to 50,000 guarded blocks of copies lay under
-  them in every run) and can open the guards there:
-  `VICTORY_PAGE_WRITES=guards` (off by default; `1`, `slots`, `all` do more).
-- Failed page-destination reads are retried (`VICTORY_DSTORAGE_RETRIES=0` = as before).
-
-Card memory (the test card is full from the first frame of the world: 85 to
-99 % of its budget for a whole run, about 26,000 texture copies let go and
-3,400 made again in five minutes, 2.8 GB of render targets that are all in
-use):
-- Levels on demand, **off by default** (`VICTORY_LEVELS_ON_DEMAND=1`): a
-  texture the title fills takes card memory only for the levels the title
-  holds (2.2 to 3.0 GB of the copies were levels it does not hold). Its test
-  runs on the software adapter; it has not run on a card yet.
-- Refused texture slots are held back for a few seconds so that a pass
-  reaches the slots behind them (`VICTORY_FULL_CARD_PASS=0` = as before);
-  room can be kept for the card copies of title buffers
-  (`VICTORY_CARD_ROOM_FOR_BUFFERS=1`, off).
-
-Tools and diagnostics:
-- `victory translate <shader file> --warm all --jobs N` translates every
-  shader ahead of a run, on the processor only (about 4.5 to 6.5 minutes
-  here); the shader cache is keyed on the translator's source, so a new
-  build that does not touch the translator starts warm.
-- Counters, all off or diagnostics-only: `VICTORY_MERGE_RACE=1` (title bytes
-  a copy-back is about to put back to older values: none found in 138,000
-  copy-backs), `VICTORY_WALLS_TRACE`, `VICTORY_CARD_ACCOUNTING`, and a census
-  of the copies the texture sweep never lets go.
-
-### What this fork changed (summary)
-
-Rendering:
-- Meshlet culling read its scene buffers as the wrong kind of view, so the world drew almost nothing; fixed.
-- Per-draw descriptor tables could run out, after which draws used slots never made for them and the card hung; fixed.
-- Light packed by the game's compute shaders was read back through empty copies (sky, probes, fog); fixed for every mip level and layer.
-- The fog reconstruction, shadow-mask, hair, blend-shape skinning, fire and several material programs did not translate; fixed.
-- Gathers at a named mip level (with and without an offset) read level 0; fixed.
-- Implicit-level samples outside pixel shaders produced invalid DXIL in 730 compute programs; fixed.
-- Rectangle lists, depth and stencil twins for depth textures written by compute, texture read-backs.
-- Ray tracing, in progress and off by default: the game's own structure-builder programs translate, title memory can be read by raw address from shaders, the hardware ray/box and ray/triangle test is emulated in DXIL (checked against a reference on the GPU), and 59 of the 64 trace programs translate. Nothing is lit by it yet. See [docs/fork-ray-tracing.md](docs/fork-ray-tracing.md).
-
-Speed and memory:
-- Waits for memory values, write-watch queries and page queries no longer walk page tables per call.
-- Large title buffers get a copy in card memory, with shader writes found by hashing on the card.
-- Submissions can be sent ahead of the wait for the card (`VICTORY_LATE_WAIT`), with a relay thread that lands results as the card finishes (`VICTORY_RELAY`): in a first five-minute run the card's idle time behind the submitting thread fell from about 136 to 30 ms per frame.
-- Title memory can be opened as a graphics heap so that buffers are used in place instead of copied (`VICTORY_INPLACE`, first stage only; a probe confirmed the approach on the test GPU).
-- The bindless texture queue no longer uploads stale views; the view table no longer grows without bound; the pipeline library is mapped instead of read into memory.
-- An intermittent device loss was traced to the pipeline library file being replaced while mapped; fixed. A library the driver rejects is kept under another name and never saved over.
-
-- Translated shaders get clean-up passes over the finished module (dead code, constant folding, reuse of values, branch facts); the pack's host instruction count falls by about 43 %, worth about 20 ms of GPU time per frame on the test machine (`VICTORY_SHADER_OPT=0` turns them off).
-
-Most of the newer speed changes sit behind environment switches that are off
-by default (`VICTORY_LATE_WAIT`, `VICTORY_RELAY`, `VICTORY_WIDE_BACK`,
-`VICTORY_CARD_BUFFERS_MIN_MB`, `VICTORY_INPLACE`, `VICTORY_BVH_BUILDER`, ...).
-Each is described in a comment where it is read.
-
-### Known problems
-
-- Everything in shadow is black (see above).
-- The interior of the first gameplay room is sometimes not drawn after the cutscene hands over to gameplay.
-- Around 24 GB of memory is in use during play, about 16 GB of it in memory: the 32 GB test PC has about 1 to 5 GB free, and the 12 GB card is nearly full, so textures are let go and made again for lack of room.
-- A few style lints are switched off for this fork in the workspace `Cargo.toml` until the newer code is tidied.
-- Many changes here are specific to this title and this GPU, and some are marked `shortcut:` in the code where they approximate what the console does.
-
-Everything below this line is upstream VIctory's own README, unchanged; its
-status section describes upstream, not this fork.
+Everything below this line is VIctory-NVIDIA's README, the work of trustno1-coder and its
+contributors, built on [VIctory](https://github.com/Marvisak/VIctory) by Marvisak and contributors.
 
 ---
 
-# VIctory
+# VIctory on NVIDIA
 
-Runs the title (Xbox Series X|S) natively on Windows, from files
-the user supplies.
+> **Reporting a problem?** Please attach **both** logs from the run that went
+> wrong. Without them we can only guess. Paste `%LOCALAPPDATA%` into the address
+> bar of File Explorer to get there.
+>
+> 1. **The play log**, in `%LOCALAPPDATA%\victory\logs\`: the newest
+>    `victory-nvidia-play-<date>-<time>-<number>.log` (from `victory.exe`) or
+>    `victory-nvidia-<date>-<time>.log` (from the script launcher). The window
+>    shows its path at the start, on the line `Log: ...`.
+> 2. **The crash log**: `%LOCALAPPDATA%\VIctory\data\7952987A\crashes.log`, and,
+>    if there is one from that run, the newest `victory-<date>-<time>-<number>.crash.log`
+>    in `%LOCALAPPDATA%\VIctory\data\7952987A\temp\`.
+>
+> Also say which GPU, Windows version (10 or 11) and release you used.
 
-The title's x86-64 code runs unchanged inside our process; VIctory supplies
-the platform underneath it and converts the title's data, ahead of time where
-it can and on first use where it must (shaders). See
-[docs/architecture.md](docs/architecture.md).
+## Frame generation: what your card supports
 
-## Status (2026-11-23)
+| Your card | Frame generation | Limits |
+| --- | --- | --- |
+| GeForce RTX 40 and RTX 50 | **DLSS frame generation** | 2x on RTX 40; more than 2x (up to 6x) needs an RTX 50 |
+| GeForce RTX 20 and RTX 30 | **AMD FSR 3 frame generation**, or **DLSS multi frame generation (MFG) through the [MFG Unlocker](https://github.com/dashdogy/MFG-Unlocker) mod** (F1, MFG UNLOCKER; see [below](#mfg-unlocker)) | FSR 3: **2x at most**. MFG Unlocker: a third-party mod, not made or supported by NVIDIA or by this fork; NVIDIA itself offers DLSS frame generation only on RTX 40 and later. DLSS upscaling works on these cards either way, so the Series X profile is fine |
+| Other cards (no DLSS) | **AMD FSR 3 frame generation** | **2x at most, Series S profile only** (F1 menu, CONSOLE): without DLSS the game's own upscaler, which FSR 3 needs, only takes the Series S sizes. Not tested here |
 
-**Not playable yet.** The title boots, runs its menus at its own 30 fps and
-loads the world, where rendering fails.
+- **At every start the game tells you** which one your card runs, and why
+  not if it can't, at the top of the picture for the first 30 seconds (and
+  in the console window).
+- **F1 menu, FRAME GEN TYPE**: AUTO (DLSS where the card has it, else FSR 3),
+  DLSS, or FSR 3 (also on an RTX 40/50, if you prefer it). FRAME GENERATION
+  switches it off or on.
+- FSR 3 needs AMD's FidelityFX DLLs (`amd_fidelityfx_loader_dx12.dll` and
+  `amd_fidelityfx_framegeneration_dx12.dll`, about 30 MB). They are AMD's and
+  not part of this program. On a card without DLSS frame generation (or with
+  FSR 3 chosen in F1) the first start of `victory.exe` asks once whether to
+  download them from AMD's own GitHub (the FidelityFX SDK);
+  `victory.exe get-fsr` does it later, and `Get-AMD-FSR.cmd` does it for the
+  script launcher. Each file is checked against the copy this fork was tested
+  with, and only loaded with AMD's valid signature. A `fidelityfx` folder next
+  to `victory.exe`, or `VICTORY_FIDELITYFX_DIR`, works too.
 
-| Stage | State |
-|-------|-------|
-| Boot, first-boot screens (accessibility, language, settings, legal) | works, 30 fps |
-| Intro video with sound | works |
-| Start screen, profile and saves | works |
-| Loading into the world (about 50 s) | works |
-| The world (first mission's intro) | reached and runs with indirect draws; its title card renders, the scene after it is still dark; 0.5-1.8 s per frame |
+## Quick start: how to run it
 
-Tested on one machine: Windows 11, AMD RX 6700 XT.
+**The easy way: one file, nothing to build**
 
-> **Warning.** Entering the world on a real GPU can currently hang it, and
-> Windows then resets the display driver (every monitor goes black for a
-> moment). To look further, use a diagnostics build with
-> `VICTORY_D3D12_WARP=1`, which renders on the software adapter.
+1. Download `victory.exe` from the
+   [latest release](https://github.com/trustno1-coder/VIctory-NVIDIA/releases/latest).
+2. Put it into the folder of **your own dump** of the title's Xbox Series
+   build v1.0.2.1, next to `game_scarlett_master.exe`.
+3. Double-click it. Windows may say the publisher is unknown (the file is not
+   signed): "More info", then "Run anyway".
 
-What each part does today and what it still needs:
+- The first start asks once whether to download NVIDIA's DLSS and frame
+  generation files (about 70 MB) from NVIDIA's own GitHub. They are NVIDIA's
+  and are not part of this program; say no and the game still runs, with its
+  own upscaling and no frame generation.
+- Settings, saves, caches, logs and NVIDIA's and AMD's files are kept under
+  `%LOCALAPPDATA%\victory`. The one exception is on Windows 10. Its own Direct3D 12
+  stops at shader model 6.5, and the game's translated shaders need 6.6. Without
+  6.6 the game shows a black screen and closes within seconds. So the first start
+  there offers to fetch Microsoft's newer Direct3D 12 runtime (the D3D12 Agility
+  SDK, `D3D12Core.dll`, about 22 MB from nuget.org). It goes into a `D3D12`
+  folder beside `victory.exe`. `victory.exe get-d3d12` does the same by hand.
+  The file is checked against Microsoft's signature and the tested SHA-256.
+  Windows 11 keeps using its own runtime. A `D3D12` folder that is already
+  there, for example from a repack or another guide (1.618, 1.620), is used
+  at the version of its `D3D12Core.dll`. Before v2026.11.27.6 that version
+  had to be 1.614, or Windows refused Direct3D 12 with `0x887E0003` (the
+  fix in .4 and .5 did not take effect).
+- C: drive full? Set `VICTORY_HOME` to another folder, once, in a command
+  prompt: `setx VICTORY_HOME D:\victory`. Then start victory.exe from a new
+  window. Settings, saves, caches, logs and the downloads all go there
+  instead of `%LOCALAPPDATA%\victory`. To keep what you have, move that
+  folder's contents there first.
+- You need Windows 10 or 11, 32 GB of RAM or more, an SSD and an NVIDIA
+  GeForce RTX card with a recent driver. This repository and its releases
+  contain no game files.
+- **The first start of each new version restarts by itself once.** A new
+  `victory.exe` runs at about 14 fps on its first start, and normally from then
+  on. So the first start plays about 20 seconds, says so at the top of the
+  picture, and starts the game again. It doesn't happen again for that version
+  (a mark is kept in `%LOCALAPPDATA%\victory\warmed`).
+- <a id="mfg-unlocker"></a>**RTX 20 and 30 cards: DLSS multi frame generation
+  (MFG) works through the [MFG Unlocker](https://github.com/dashdogy/MFG-Unlocker)
+  mod.** The fork supports loading it, but the mod is someone else's: it is not
+  made or supported by NVIDIA (whose DLSS frame generation is for RTX 40 and
+  later) or by this fork, and we have not tested it on an RTX 20 or 30
+  ourselves. It is an option, off by default: **F1, MFG UNLOCKER, ON**, then
+  restart. On, the next start
+  downloads it by itself from the mod's own GitHub release (v1.7.2, about 5 MB,
+  checked against the SHA-256 its author published) into
+  `%LOCALAPPDATA%\victory\mfg-unlocker`, and every start loads it. Nothing is
+  renamed or copied. On an RTX 20 or 30 the first start also asks once (No unless
+  you type y). `victory.exe get-mfg` downloads it by hand. The mod writes its own
+  `RTXMFG-...` logs and settings beside `victory.exe`, and Backspace opens its
+  menu. The start's notice says "UNLOCKED BY A MOD" and the log says it was
+  loaded. If the game crashes or frame generation fails, turn it off in F1 (or
+  add `VICTORY_MFG_UNLOCKER=` to `%LOCALAPPDATA%\victory\victory-settings.txt`).
+  FSR 3 frame generation (2x) is the fully supported way on those cards. A
+  `winmm.dll` copy of the mod beside `victory.exe` still works too.
 
-| Subsystem | Today | Needs |
-|-----------|-------|-------|
-| Loader | Runs the title's executable and its DLLs in our process; crash reports name the faulting code and are kept in `crashes.log` | – |
-| Runtime services | One signed-in offline user, licences, packages, saves that survive a kill at any step, text entry dialog | Speech is silent; the dialog and relaunch are untested live |
-| Network | Offline by design: the title cannot reach the network | – |
-| Files and streaming | Archives and streamed data read, zlib and BCPack decoded in parallel | Loading is limited by writes into title memory |
-| Input | XInput pads, PlayStation pads (HID), keyboard, keyboard stand-in pad | Trigger rumble; rumble and light bar on PlayStation pads |
-| Audio | Menu, video and loading sound; XMA voices and Opus streams decode | Reverb is silent; Opus results unverified against the title |
-| GPU: menus | Draws, compute and presentation on host D3D12; only changed title memory is copied | Frame pacing drifts on one screen in release builds |
-| GPU: world | Mesh pipelines, shader-written buffers, descriptor lifetimes, indirect execution (arguments clamped), pipelines made by worker threads and kept on disk | Most of the scene is still missing (untranslated shaders drop draws); frames take seconds; real queries, depth bounds, HDR and scaling are missing |
-| Shaders | Console GPU code recompiled to DXIL at first use, cached on disk. Menus: all. World: mesh 8,191 of 8,506, vertex/pixel 10,617 of 12,346, compute 1,643 of 2,539 | 64-bit image atomics, merged geometry stages, the ray-tracing builder's shaders; some compute programs need a GPU with 64-lane waves |
-| Textures | Console tiled layouts and detiling for the modes the title uses | Render-target metadata planes |
-| Series S mode | Runs through the menus to the loading screen | The world, as above |
+**In the game**
 
-## Getting started
+- **F1** brings up the settings menu (arrow keys pick and change, Enter does
+  it): DLSS, frame generation, frame rate cap and more.
+- **F3** shows the stats panel (frame rate, frame generation, draws, GPU and
+  memory numbers).
 
-Requirements: Windows 10/11 x64, a CPU with AVX2, a Direct3D 12 GPU with
-shader model 6.6 (and mesh shaders for the world), Rust (pinned in
-`rust-toolchain.toml`).
+**Building it yourself instead**
 
-The title also needs several GiB of available Windows commit at startup.
-Check **Committed** under **Task Manager → Performance → Memory**. If
-`crashes.log` reports Windows error 1455, close other applications or increase
-the Windows paging file size, then retry.
+Install [Rust](https://rustup.rs) and the
+[Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+with "Desktop development with C++", then in PowerShell:
 
 ```powershell
-cargo xtask install-hooks                # asset-policy check on every commit
-copy victory.example.toml victory.toml   # then set your paths (outside the repo)
-cargo test --workspace                   # needs no game data
-cargo run -p victory -- config           # check your paths
+git clone https://github.com/trustno1-coder/VIctory-NVIDIA
+cd VIctory-NVIDIA
+.\Get-NVIDIA-DLSS.cmd
+powershell -ExecutionPolicy Bypass -File scripts\play-nvidia.ps1 -Exe 'D:\Games\MyDump\game_scarlett_master.exe'
 ```
 
-Run the title:
+Put the path to **your** `game_scarlett_master.exe` in the last line. The
+first start builds the layer, which takes a few minutes.
+
+Options, requirements in full and the details are under
+[How to run it](#how-to-run-it).
+
+A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
+that runs an Xbox Series title natively on Windows from files **you** supply,
+tuned for **NVIDIA RTX** cards.
+
+> **This repository contains no game files, code or assets.** You need your
+> own legally obtained copy of the title. It is not affiliated with or endorsed
+> by the title's developer or publisher, nor by NVIDIA. See
+> [docs/asset-policy.md](docs/asset-policy.md).
+
+## Built from many projects, and from running every one of them
+
+This repository did not come from one place, and the base it stands on today
+is the end of a long comparison, not the start of the work. Over several weeks
+we built, ran and measured many projects on the same NVIDIA PC: Leonida,
+[Marvisak's VIctory](https://github.com/Marvisak/VIctory),
+[fxceless's fork](https://github.com/fxceless/victory-fork),
+[the 7900 XTX fork](https://github.com/avatarmanz/VIctory-7900XTX),
+[Belobug's](https://github.com/Belobug/VIctory-Belobug-AMD),
+[DexNom's](https://github.com/DexNom/VIctory),
+[CGBJ's cool_fox](https://github.com/codec-d/cool_fox), Kelvaroq's, Neptune,
+xcl (another layer for the same title) and then
+[foxhound](https://github.com/readmet3xt-lab/foxhound). On each we found what
+stopped it on an RTX card, fixed or worked around it, measured the result, and
+carried what we learned to the next. Every pull request sent here was built
+and run on the same card before it was merged. No single project got here
+alone, and choosing the base that runs best was only one result of that work.
+
+### What this fork brings
+
+Not one fix but a long line of them: days of work, much of it around the clock,
+across every one of those codebases, more than 300 measured runs on the same
+RTX PC, and each fault chased towards its cause before the next build. In rendering, in
+speed, in the picture and in simply being able to play it:
+
+**Rendering fixes**
+
+- **Draws no longer skipped on NVIDIA.** NVIDIA caps the view heap below what
+  the title asks for; thousands of draws a frame were dropped, the screen
+  rarely updated and the character jumped from place to place. The pool of
+  descriptor slots was reworked until almost none were.
+- **Menus, loading screens and subtitles on Series S**, black until then (the
+  interface plane laid over the game), and **faces that move** (their network
+  carried through as integers): ported from fxceless's pull requests 1189 and
+  927 and made to work on this card.
+- **The intro video without flicker**: its frames came out of order.
+- **Black blobs gone**: a single bad number from a shader, spread by blur and
+  the upscaler into patches on faces and in the air, is caught where it is
+  written.
+- **White, hazy rooms explained and tamed**: the title's ray tracing was
+  running with its structure builder off, so every ray missed. Which passes
+  can be left out without filling the picture with rainbow glitter was worked
+  out pass by pass.
+- **The ray-tracing structure builder running on NVIDIA**, on CGBJ's renderer:
+  the draws dropped for it went from thousands a frame to one.
+- **White-outs with black holes further into the game** followed up in frames
+  captured in play: thousands of draws a frame were being dropped there for
+  that same missing structure.
+
+**Speed**
+
+- **Memory compares moved to the card**: 11 to about 22 frames a second on the
+  base of the time.
+- **Settings measured, not guessed**: one switch at a time, on the same scene,
+  run after run.
+- **The base itself chosen by measurement**: the same rooms went from 15-17
+  frames a second to 26-30, at a higher resolution.
+- **The 30 frames a second were the title's own frame interval**, not the
+  layer's limit: found, and lifted.
+
+**Picture and frames**
+
+- **DLSS in place of the title's upscaler**, with its model and mode to choose.
+- **DLSS frame generation with up to six frames shown for each one rendered**,
+  switched and changed while playing, without a restart, once it was on at the
+  start or made ready with `-FrameGenReady` (foxhound's is 2x, set at the start). By Streamline's own count it shows exactly 2, 4 and 6.
+- **Why frame generation showed nothing on a full 12 GB card**, found and
+  fixed: the card's memory is now shared out so that it has room.
+- **The frame rate at the top left of the picture**: frames rendered a second
+  and, with frame generation, frames shown (`FPS: 28.4  FG: 170.4`).
+
+**Playing it**
+
+- **The F1 settings menu**, in every build: DLSS, frame generation, frame rate
+  cap, console profile, picture size, the light estimates and the main speed
+  switches, saved to `victory-settings.txt` and applied at the next start
+  ("SAVE AND RESTART NOW" does that for you; lines marked LIVE change at once).
+- **The F3 stats panel**, in every build: frame rate and frame time, frames
+  shown with frame generation, draws, how busy the GPU and the submitting
+  thread are, copies, RAM and VRAM. The menu switches it too.
+- **Open water without dark blocks.** Two of the title's water light programs
+  run on 32-lane cards only in a form that left whole tiles of the sea dark
+  (around boats, along shores, under bridges) and cost about 15 ms of the
+  card a frame. They are left out there: no blocks and 30 fps instead of 25
+  on the first boat ride (RTX 5070), with water that is darker and bluer.
+  WATER LIGHT in the menu (`VICTORY_WATER_LIGHT=1`) runs them again.
+- **One command to play**: the launcher builds the layer the first time and
+  applies what the menu saved.
+- **`Get-NVIDIA-DLSS.cmd`**: the eight NVIDIA files that are loaded, about
+  70 MB, taken out of NVIDIA's 263 MB release without downloading the rest.
+  NVIDIA's licence does not let a repository carry them, so they come from
+  NVIDIA.
+
+**Tested, not assumed**
+
+- Every pull request sent here was read line by line and, where it touched the
+  game, built and run on this card before it was merged: ten so far.
+
+Where each of these is today: this fork's own code in this tree is the F1
+menu, the stats panel in every build, the water light switch, frame
+generation from 2x to 6x with its live switching and memory handling, the
+lifted frame rate cap, the frame rate line, the launcher and the NVIDIA file
+fetcher. The foxhound line carries the descriptor slots, the
+compares on the card, the interface plane and the face network in its own
+form. The black-blob scrub, the graphics card picker and the ray-tracing
+builder path are in this repository's history, and come over as this base
+turns out to need them.
+
+### The base since 2026-11-26: foxhound
+
+On 2026-11-26 this fork moved onto
+[readmet3xt-lab/foxhound](https://github.com/readmet3xt-lab/foxhound)
+(`02fc18a`, GPL-3.0-or-later). On the same PC it ran the same rooms at close to
+twice the frame rate of what this fork had, at a higher resolution, so its
+tree is now this one's, with its history kept, and this fork's own additions
+are on top. What foxhound is and how it got there is in its own README, kept as
+[docs/README-foxhound.md](docs/README-foxhound.md); its measurements are in
+[docs/findings.md](docs/findings.md).
+
+What foxhound brings:
+
+- the Series X profile at a native 2560x1440;
+- DLSS Super Resolution and DLSS Frame Generation through NVIDIA Streamline,
+  loaded when the game runs (nothing of NVIDIA's is needed to build);
+- an estimate of indirect light and of reflections in place of the title's ray
+  tracing, and fewer stalls at scene cuts.
+
+What this fork has on top of it is under
+[What this fork brings](#what-this-fork-brings) above.
+
+## Where it stands
+
+Tested on one PC: Windows 11, Ryzen 7 9800X3D, 64 GB RAM, **GeForce RTX 5070
+12 GB**; the title's Xbox Series build v1.0.2.1, Series X profile, 2560x1440
+output, DLSS Quality. Frame rates are the layer's own count, in the opening
+rooms.
+
+| | |
+|---|---|
+| Opening rooms | mostly 26-30 frames a second rendered (33-38 ms a frame) |
+| Frame generation | 2x to 6x on top of that: by Streamline's own count, exactly 2, 4 and 6 frames shown for each one rendered |
+| Device losses, crashes | none in the measured runs |
+| Before this base (Series S, 720p to 1080p by DLSS) | 15-17 frames a second in the same rooms |
+
+foxhound's own measurements, on an RTX 4070 SUPER, are in its README.
+
+What is known to be wrong:
+
+- **No ray tracing.** The title's own is off (`VICTORY_BVH_BUILDER=1`, or the
+  menu's RAY TRACING, turns it on: slow and with a broken picture on this
+  base). An estimate stands in for indirect light and reflections.
+- **Frame generation needs room in the card's memory.** The layer fills the
+  card with textures up to its budget; with frame generation on from the start
+  the launcher holds a fifth of the budget back (a little less while it is only
+  ready), so a few more textures can come late. Switched on from the menu on a
+  full 12 GB card it can still say that memory is past the budget; it then
+  runs, perhaps unevenly.
+- **Frames are only generated while the game's window has the focus**, and
+  about a second passes after a change before they come.
+- **The first run of every new build stutters** while the driver compiles
+  pipelines (foxhound's README, *Warming up*, says how to make them ahead).
+- "SAVE AND RESTART NOW" can leave the old game's process behind without a
+  window; it goes when the PC restarts.
+- What foxhound lists as wrong (the heat-haze pass left out, hitches in
+  cutscenes) applies here too.
+
+## How to run it
+
+You need Windows 10 or 11 (x64), a CPU with AVX2, 32 GB of RAM or more, an
+SSD, an NVIDIA GeForce RTX card with a recent driver (RTX 40 or later for frame
+generation, with hardware-accelerated GPU scheduling on; more than 2x needs an
+RTX 50), [Rust](https://rustup.rs) (the toolchain is pinned), the Visual Studio
+Build Tools with "Desktop development with C++", and **your own dump** of the
+title's Xbox Series build v1.0.2.1 (the folder with
+`game_scarlett_master.exe`).
 
 ```powershell
-cargo build --release -p victory
-target\release\victory.exe run <game dir>\<the title's exe> --execute
+git clone https://github.com/trustno1-coder/VIctory-NVIDIA
+cd VIctory-NVIDIA
+copy victory.example.toml victory.toml      # then set game_dir to your dump's folder, outside this one
+.\Get-NVIDIA-DLSS.cmd                        # once: NVIDIA's DLSS and frame generation files, about 70 MB
+scripts\play-nvidia.ps1 -Exe 'D:\Games\MyDump\game_scarlett_master.exe'
 ```
 
-The window caption shows the framerate. Saves, settings and `crashes.log`
-are kept under the data folder (default `%LOCALAPPDATA%\victory\data`), derived
-data under the cache folder.
+The first start builds the layer (a few minutes). `Get-NVIDIA-DLSS.cmd` gets
+NVIDIA's files from
+[NVIDIA-RTX/Streamline](https://github.com/NVIDIA-RTX/Streamline) into
+`nvidia-sdk\` (git-ignored). They are NVIDIA's, under NVIDIA's licences, which
+are saved beside them; this repository does not carry them and may not. Nothing
+is downloaded unless you run that file; `VICTORY_STREAMLINE_DIR` names another
+folder if you have the Streamline SDK already.
 
-Input: XInput pads, and PlayStation pads (DualShock 4, DualSense, DualSense Edge; USB or
-Bluetooth) read directly in the slots XInput leaves empty (`VICTORY_SONY_PADS=0` turns that off;
-no rumble or light bar for them). With none connected the keyboard is a pad while the
-title's window has focus:
+`scripts\play-nvidia.ps1` is `scripts\play-foxhound.ps1` under the name this
+fork has always had; its options:
 
-| Keys | Pad |
-|------|-----|
-| W A S D / I J K L | left / right stick |
-| arrows | D-pad |
-| Enter, Backspace, X, Y | A, B, X, Y |
-| Q / E, Z / C | shoulders, triggers |
-| F / H | stick clicks |
-| Esc, Tab | Menu, View |
+| Option | What |
+|---|---|
+| *(none)* | Series X profile, 2560x1440, DLSS Quality, no frame rate cap, frame generation ready but off |
+| `-FrameGen`, `-FrameGenX 4` | frame generation on from the start, 2 to 6 frames shown for each one rendered |
+| `-Dlss off` / `dlaa` / `balanced` / `performance` | the title's own upscaling, or another DLSS mode |
+| `-Fps 60` | a frame rate cap (30 is the title's own) |
+| `-SeriesS` | the Series S profile: 1280x720 inside, faster, softer |
+| `-Res 1080to1440` / `4k` | scene at 1080p upscaled by the title / the stock 3840x2160 output |
+| `-FrameGenReady` | frame generation made ready but off, so the F1 menu can switch it while playing (costs frame rate: ready, frames go through Streamline's swap chain; without it, a change in F1 takes effect at the next start) |
+| `-FgType auto` / `dlss` / `fsr` | which frame generation (see the top of this page); FSR 3's DLLs from `VICTORY_FIDELITYFX_DIR`, else `amd-sdk\FidelityFX\bin` here |
+| `-Build diag` | the diagnostics build (slower; captures, timelines, recording time in the F3 panel) |
+| `-More @{VICTORY_X='1'}` | add or override any switch |
 
-## Commands
+What the F1 menu saved (`victory-settings.txt`) goes over these at every start;
+delete that file to go back to them. Full screen: start the game, then run
+`.\scripts\fullscreen.ps1` in another window. Logs go to
+`%LOCALAPPDATA%\victory\logs`, saves to `%LOCALAPPDATA%\victory\data`.
 
-```
-victory inspect <exe|dll> [--imports] [--exports]
-victory census [paths...] [--missing] [--strict]
-victory lib-exports <import.lib> [--list]
-victory shader-info [paths...] [--verbose] [--disasm]
-victory translate [paths...] [--validate] [--pipelines] [--list] [--jobs N]
-victory run <exe> [--execute] [--unimplemented trap|zero] [--strict]
-            [--console series-x|series-s] [-- <title arguments>]
-victory config
-```
+If the menu works but loading a scene closes the game, see the
+[Windows memory troubleshooting guide](docs/windows-memory.md). It shows how
+to check memory on systems with 32 GB of RAM or GPUs with 8 GB of VRAM.
 
-Logging: `VICTORY_LOG=victory_loader=trace,info` (a release build logs
-info and above).
+## How it works, and the findings
 
-## Debugging
+- [docs/README-foxhound.md](docs/README-foxhound.md): foxhound's own README
+  (set-up by hand, warming up, its switches).
+- [docs/architecture.md](docs/architecture.md): the layer's parts.
+- [docs/findings.md](docs/findings.md): measurements behind the choices.
+- [docs/dlss.md](docs/dlss.md): DLSS and Frame Generation.
+- [docs/linux-proton.md](docs/linux-proton.md): building on Linux and first
+  runs under Proton (experimental).
+- [docs/fork-ray-tracing.md](docs/fork-ray-tracing.md): the title's ray tracing
+  and the light estimate.
+- [docs/asset-policy.md](docs/asset-policy.md): what may and may not be in this
+  repository.
 
-A release build has no debugging aids. Build them in with
+## Credits
 
-```powershell
-cargo build --profile diag -p victory --features diagnostics   # target\diag\victory.exe
-```
+A tree of other people's work with a little on top; the history is kept.
 
-| Variable | Effect |
-|----------|--------|
-| `VICTORY_LOG=<target>=debug,...` | debug and trace output |
-| `VICTORY_STACKS=20,60` | every thread's stack at those seconds |
-| `VICTORY_WATCH=<rva>,...` | logs a title u32 when it changes |
-| `VICTORY_KEYS=30:Enter,35:X` | presses keys at those seconds, focus or not |
-| `VICTORY_CRASH_SAVE=<rva>:<len>,...` | saves title memory to the cache folder on a crash |
-| `VICTORY_CAPTURE=<dir>` | saves presented frames (powers of two, or `VICTORY_CAPTURE_FRAMES=<list>`) |
-| `VICTORY_DUMP_TARGETS=1` | with the two above, saves every render target of those frames |
-| `VICTORY_D3D12_DEBUG=1` | host debug layer |
-| `VICTORY_D3D12_GBV=1` | with the above, GPU-based validation (bad descriptor use reported, not faulted; slow) |
-| `VICTORY_D3D12_DRED=1` | on a GPU failure, the allocation hit and the commands in flight |
-| `VICTORY_PIPELINE_WAIT_MS=24` | reduce the per-frame wait for background pipeline creation from the default of 500 ms. A draw can be omitted until its pipeline is ready |
-| `VICTORY_SKIP_PIPELINES=<hash>,...` | omit draws and dispatches, including indirect ones, whose pipeline contains a listed 16-digit shader hash |
-| `VICTORY_GPU_TIMING=1` | with the above, each list of a submission run and timed on its own; slow lists logged with their slowest commands |
-| `VICTORY_D3D12_WARP=1` | host device on the software adapter (slow; cannot reset the driver) |
-| `VICTORY_SHADER_LOOP_LIMIT=<n>` | translated shader loops stop after `n` iterations per lane instead of 2^20 (own shader cache entries); if a lower `n` makes world frames much faster, loops hitting the limit are what makes them slow |
-| `VICTORY_AUDIO_CAPTURE=<file.wav>` | records what the title plays (our process only) |
-| `VICTORY_XMA_DUMP=<dir>` | saves the first 32 XMA voices' context and input |
-
-Every build appends crashes and host GPU failures to `crashes.log` in the
-title's data folder.
+- **[foxhound](https://github.com/readmet3xt-lab/foxhound)** by
+  readmet3xt-lab: the base of this fork since 2026-11-26, and through it:
+- **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
+  contributors: the loader, the runtime services, the Direct3D 12 back end and
+  the shader recompiler.
+- **[fxceless/victory-fork](https://github.com/fxceless/victory-fork)**,
+  **[avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)**,
+  **[codec-d/cool_fox](https://github.com/codec-d/cool_fox)**,
+  **[DexNom/VIctory](https://github.com/DexNom/VIctory)**,
+  **[Belobug/VIctory-Belobug-AMD](https://github.com/Belobug/VIctory-Belobug-AMD)**
+  and the others foxhound's README names.
+- Everyone who sent pull requests to this fork before the move; that work is
+  in the history, on the branch that was `main` until then.
+- Testing save sharing (F1 > EXPORT SAVE / IMPORT SAVE) with their own saves, in
+  [discussion #520](https://github.com/trustno1-coder/VIctory-NVIDIA/discussions/520):
+  [DueTonight](https://github.com/DueTonight) and
+  [mikan123pro](https://github.com/mikan123pro).
+- NVIDIA Streamline, DLSS and Reflex are NVIDIA's; they are loaded at run time
+  from a folder you supply.
+- Much of this fork's code was written with
+  [Claude Code](https://claude.com/claude-code).
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+GPL-3.0-or-later, as VIctory and foxhound. See [LICENSE](LICENSE); the one file
+that is not covered is named in [docs/asset-policy.md](docs/asset-policy.md).

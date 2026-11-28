@@ -636,15 +636,14 @@ dependencies = [
  "blake3",
  "clap",
  "memchr",
- "tracing",
  "victory-core",
+ "victory-formats",
  "victory-game",
  "victory-hle",
  "victory-loader",
  "victory-pe",
  "victory-shader",
  "walkdir",
- "windows-sys",
 ]
 
 [[package]]
@@ -684,7 +683,6 @@ dependencies = [
  "victory-shader",
  "windows",
  "windows-sys",
- "xxhash-rust",
  "zlib-rs",
 ]
 
@@ -900,12 +898,6 @@ dependencies = [
  "clap",
  "walkdir",
 ]
-
-[[package]]
-name = "xxhash-rust"
-version = "0.8.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40de123dbb523ebcc00d61ec01840ad192578afc378d859f3429caa38308fad5"
 
 [[package]]
 name = "zlib-rs"

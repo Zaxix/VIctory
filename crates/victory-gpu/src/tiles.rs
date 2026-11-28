@@ -71,46 +71,14 @@ const HEAP_TILES: u32 = 1024;
 /// no heap could be had); uploads recorded again for such a level.
 pub(crate) static STATS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
 
-/// Now: such textures alive that show no level (no level is both held and
-/// given tiles, so every view of them reads zeros: a black texture), and
-/// the bytes all their levels would take; since the start: levels given
-/// tiles on a full card by [`small_when_full_mb`].
-pub(crate) static BLANK: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-
-/// `VICTORY_TILES_SMALL_WHEN_FULL_MB` (0, off, by default): while the card
-/// has no room, an upload still gives tiles to the smallest held levels of
-/// its texture (the packed ones, then standard ones from the smallest up,
-/// at most [`SMALL_TILES`] tiles a texture), as long as all the tiles
-/// given stand under this many megabytes. A texture then shows blurred
-/// from its small levels instead of black; its larger levels wait for room
-/// as before.
-fn small_when_full_mb() -> u64 {
-    static MB: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *MB.get_or_init(|| {
-        std::env::var("VICTORY_TILES_SMALL_WHEN_FULL_MB")
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            // 256 unless set (the run set gives 512): without it run 341
-            // showed 612 black textures.
-            .map_or(256, |mb| mb.min(1024))
-    })
-}
-
-/// Tiles a texture gets at most on a full card ([`small_when_full_mb`]): a
-/// megabyte.
-const SMALL_TILES: u32 = 16;
-
 /// Whether textures are made this way: the switch
-/// (`VICTORY_LEVELS_ON_DEMAND`, in the faster defaults since run 11 on the
-/// owner's RTX 4070: 3.0 GB of the card not allocated for levels the title
-/// does not hold, textures turned down for room 73,500 -> 58 times, no
-/// texture without a level; `=0` off), and a card that reads
+/// (`VICTORY_LEVELS_ON_DEMAND=1`; off by default), and a card that reads
 /// zeros from, and drops writes to, levels without memory (tiled resources
 /// tier 2).
 pub(crate) fn wanted() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        if !crate::fast::on("VICTORY_LEVELS_ON_DEMAND") {
+        if !std::env::var_os("VICTORY_LEVELS_ON_DEMAND").is_some_and(|v| v == "1") {
             return false;
         }
         let Some(host) = host() else {
@@ -355,9 +323,6 @@ impl Tiled {
         STATS[0].fetch_add(1, Ordering::Relaxed);
         STATS[1].fetch_add(full, Ordering::Relaxed);
         STATS[4].fetch_add(1, Ordering::Relaxed);
-        // Made with no level shown.
-        BLANK[0].fetch_add(1, Ordering::Relaxed);
-        BLANK[1].fetch_add(full, Ordering::Relaxed);
         Some(Tiled {
             given: Mutex::new(Given {
                 levels: vec![false; standard.len()],
@@ -413,14 +378,7 @@ impl Tiled {
         let named = held | card;
         // The levels the card itself writes are few and are not kept
         // waiting: a write of the card's into no memory is lost.
-        // On a full card, with `VICTORY_TILES_SMALL_WHEN_FULL_MB`, the
-        // smallest held levels too: this list writes every level whole.
-        let small = if room { 0 } else { self.small_levels(held) };
-        if small != 0 {
-            BLANK[2].fetch_add(u64::from(small.count_ones()), Ordering::Relaxed);
-        }
-        let changed =
-            self.give_locked(&mut given, queue, device, texture, named, if room { named } else { card | small });
+        let changed = self.give_locked(&mut given, queue, device, texture, named, if room { named } else { card });
         let missing = self.without_locked(&given, named) != 0;
         (changed, missing)
     }
@@ -470,40 +428,6 @@ impl Tiled {
             self.unclaim(without);
         }
         changed
-    }
-
-    /// Of the levels `held` (a bit a level), the smallest ones that may get
-    /// tiles on a full card ([`small_when_full_mb`]): the packed levels if
-    /// any of them is held, then standard levels from the smallest up while
-    /// each is held, within [`SMALL_TILES`] tiles; none if the switch is
-    /// off or the tiles given already reach its megabytes. Contiguous from
-    /// the smallest level, so that a view shown from the first of them
-    /// reads no level without memory.
-    fn small_levels(&self, held: u32) -> u32 {
-        let cap = small_when_full_mb() << 20;
-        if cap == 0 || STATS[2].load(Ordering::Relaxed) >= cap {
-            return 0;
-        }
-        let first_packed = self.standard.len() as u32;
-        let mut bits = 0u32;
-        let mut tiles = 0u32;
-        if self.packed > 0 {
-            let packed_bits = self.every_level() & !((1u32 << first_packed) - 1);
-            if held & packed_bits == 0 {
-                return 0;
-            }
-            bits |= packed_bits;
-            tiles += self.packed;
-        }
-        for level in (0..first_packed).rev() {
-            let tiles_here = self.standard[level as usize];
-            if held & (1 << level) == 0 || tiles + tiles_here > SMALL_TILES {
-                break;
-            }
-            tiles += tiles_here;
-            bits |= 1 << level;
-        }
-        if tiles > SMALL_TILES { 0 } else { bits }
     }
 
     /// The bits of the levels that get their tiles with level `level`:
@@ -645,6 +569,7 @@ impl Tiled {
             }
             STATS[6].fetch_add(1, Ordering::Relaxed);
             STATS[7].fetch_add(began.elapsed().as_micros() as u64, Ordering::Relaxed);
+            crate::host::tiles_mapped_on(queue);
             match level {
                 Some(level) => given.levels[level] = true,
                 None => given.packed = true,
@@ -663,24 +588,7 @@ impl Tiled {
             }
         };
         let shown = (0..self.levels).find(|&level| has(level) && with_tiles(level)).unwrap_or(u32::MAX);
-        let old = self.shown.swap(shown, Ordering::Relaxed);
-        // (Under `given`'s lock: one thread at a time moves a texture in or
-        // out of the blank count.)
-        if old == u32::MAX && shown != u32::MAX {
-            BLANK[0].fetch_sub(1, Ordering::Relaxed);
-            BLANK[1].fetch_sub(self.full, Ordering::Relaxed);
-        } else if old != u32::MAX && shown == u32::MAX {
-            BLANK[0].fetch_add(1, Ordering::Relaxed);
-            BLANK[1].fetch_add(self.full, Ordering::Relaxed);
-        }
-        old != shown
-    }
-
-    /// The levels held at the last upload, a bit a level (0 before the
-    /// first): for the slot census (`HostHeap::placed_slot_census`).
-    #[cfg(feature = "diagnostics")]
-    pub(crate) fn held_now(&self) -> u32 {
-        self.held.load(Ordering::Relaxed)
+        self.shown.swap(shown, Ordering::Relaxed) != shown
     }
 
     /// The first level a view of the texture may show; `None` while no
@@ -735,10 +643,6 @@ impl Drop for Tiled {
         STATS[0].fetch_sub(1, Ordering::Relaxed);
         STATS[1].fetch_sub(self.full, Ordering::Relaxed);
         STATS[2].fetch_sub(bytes, Ordering::Relaxed);
-        if *self.shown.get_mut() == u32::MAX {
-            BLANK[0].fetch_sub(1, Ordering::Relaxed);
-            BLANK[1].fetch_sub(self.full, Ordering::Relaxed);
-        }
     }
 }
 
@@ -786,22 +690,6 @@ pub(crate) fn status() {
     }
     let calls = s[6] - BEFORE[0].swap(s[6], Ordering::Relaxed);
     let micros = s[7] - BEFORE[1].swap(s[7], Ordering::Relaxed);
-    // How full the pool's heaps are (R59: occupancy before any reclaim):
-    // heaps, free tiles, heaps with none given, the longest free run.
-    let (heaps, free, empty, longest) = {
-        let pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
-        pool.iter().flatten().fold((0u64, 0u64, 0u64, 0u32), |(h, f, e, l), heap| {
-            let free = heap.free_tiles();
-            let run = heap.free.iter().map(|r| r.1).max().unwrap_or(0);
-            (h + 1, f + u64::from(free), e + u64::from(free == HEAP_TILES), l.max(run))
-        })
-    };
-    tracing::info!(
-        "the levels' pool: {heaps} heaps of {} MB, {} MB of their tiles free ({empty} heaps wholly free), the longest free run {} KB",
-        (u64::from(HEAP_TILES) * TILE) >> 20,
-        (free * TILE) >> 20,
-        (u64::from(longest) * TILE) >> 10,
-    );
     tracing::info!(
         "textures with levels on demand: {} alive ({} made so far), {} MB of the card given to {} levels in all, \
          {} MB of the card not allocated for levels the title does not hold ({} MB if every level had memory); \
@@ -822,17 +710,6 @@ pub(crate) fn status() {
         s[7],
         s[9],
         s[10],
-    );
-    let blank: Vec<u64> = BLANK.iter().map(|b| b.load(Ordering::Relaxed)).collect();
-    tracing::info!(
-        "textures with levels on demand that show no level now (no level both held and given tiles: their views read zeros, \
-         a black texture): {} of {} alive, {} MB if all their levels had memory; levels given tiles on a full card since the start \
-         (VICTORY_TILES_SMALL_WHEN_FULL_MB={}): {}",
-        blank[0],
-        s[0],
-        blank[1] >> 20,
-        small_when_full_mb(),
-        blank[2],
     );
 }
 
@@ -1703,16 +1580,8 @@ void look() {
         // that does not hold level 0 must not treat level 0 as card-owned.
         tiled.standard[0] = 1;
         let (changed, waiting) = tiled.uploaded_on(host.queue(), &host.device, &tex, 1 << 1, false);
+        assert!(!changed && waiting);
         assert!(!tiled.has_tiles(0));
-        if small_when_full_mb() == 0 {
-            assert!(!changed && waiting);
-            assert_eq!(tiled.given_bytes(), 0);
-        } else {
-            // On by default (512 MB): the held small level 1 gets its tile
-            // on the full card, level 0 still none.
-            assert!(tiled.has_tiles(1));
-            assert_eq!(tiled.given_bytes(), TILE);
-            let _ = (changed, waiting);
-        }
+        assert_eq!(tiled.given_bytes(), 0);
     }
 }
