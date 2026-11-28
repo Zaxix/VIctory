@@ -3,7 +3,7 @@
 **Best world average so far on the owner's PC (Ryzen 7 5800X, RTX 4070): 6.7 fps, 22 % of 30**
 (run 19, the old line). This branch has not been run on the owner's PC yet.
 
-**Why this branch exists.** Defeat's own line (tagged `defeat-own-line`, and still `main` until
+**Why this branch exists.** Defeat's own line (branch `defeat-own-line`, and still `main` until
 the owner switches) grew from fxceless's gta6 base. On 27 November fxceless stopped that line and
 rebuilt on [VIctory-NVIDIA](https://github.com/trustno1-coder/VIctory-NVIDIA): on their GeForce RTX
 4070 it averaged about **17 fps in the open world at 2560x1440**, about half the frame time of
