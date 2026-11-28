@@ -88,14 +88,16 @@ status table).
 
 ### Frame rate in the world, and how far to 30 fps
 
-**Best so far: 6.7 fps in the world, 22 % of the way to 30 fps** (run 18: the median frame of the
-frame lines with 3,000 or more draws was 149.5 ms; frames of 4,500-6,900 draws 137-142 ms, 7.1-7.3 fps;
-menus and loading screens run at 30 fps and are left out). 30 fps is 33 ms a frame, so about 116 ms
-a frame still has to go. Where a world frame goes now (run 18, medians; the parts run side by side on
-several threads): preparing the card's work about 80 ms, copying its results back about 39 ms, and
-the card stands idle about 66 ms a frame, 60 of them waiting for us, so the card is not what holds
-the frame rate back. Run 18 also ended the streaming stalls of run 17 (storage requests over 1 s:
-204 to 0) by writing DirectStorage's data through one kept view per memory allocation.
+**Best so far: 6.7 fps in the world, 22 % of the way to 30 fps** (run 19: the median of the
+frame lines with 3,000 or more draws was 148.2 ms, run 18 149.5 ms; menus and loading screens run at
+30 fps and are left out). Counted frame by frame for the first time in run 19 (every frame between
+two presents, long ones included), the world ran at **6.3 fps on average, 21 % of 30**: 2,611
+frames in 414 s, 6.5 % of them over 300 ms. 30 fps is 33 ms a frame, so about 115 ms a frame still
+has to go. Where a world frame goes now (run 19, medians; the parts run side by side on several
+threads): preparing the card's work about 72 ms, copying its results back about 38 ms, and the card
+stands idle about 65 ms a frame, 60 of them waiting for us, so the card is not what holds the frame
+rate back. Streaming no longer stalls: no storage request over 250 ms in run 19 (run 17: 2,866, 204
+of them over 1 s).
 `cargo xtask runstats run.txt` reads a run log into these figures (by draws per frame, and by the
 phases of any `VICTORY_X=alt` switch).
 

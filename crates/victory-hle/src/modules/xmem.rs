@@ -997,11 +997,11 @@ pub(crate) fn write_physical(pages: &[usize], offset: usize, data: &[u8]) -> boo
     };
     let (mut within, mut done) = (offset % PAGE, 0);
     for (slice, n) in &runs {
-        let Some(mut view) = window(slice, *n) else {
+        let k = (n * PAGE - within).min(data.len() - done);
+        let Some(mut view) = window(slice, *n, within..within + k) else {
             return false;
         };
-        let k = (n * PAGE - within).min(data.len() - done);
-        view.bytes()[within..within + k].copy_from_slice(&data[done..done + k]);
+        view.range(within..within + k).copy_from_slice(&data[done..done + k]);
         (within, done) = (0, done + k);
     }
     true
@@ -1019,7 +1019,7 @@ pub(crate) struct PageWindow {
 impl PageWindow {
     pub(crate) fn bytes(&mut self) -> &mut [u8] {
         let (within, len) = (self.within, self.len);
-        &mut self.view.bytes()[within..within + len]
+        self.view.range(within..within + len)
     }
 }
 
@@ -1033,9 +1033,10 @@ pub(crate) fn page_window(pages: &[usize], offset: usize, len: usize) -> Option<
     let [(slice, n)] = runs.as_slice() else {
         return None;
     };
+    let within = offset % PAGE;
     Some(PageWindow {
-        view: window(slice, *n)?,
-        within: offset % PAGE,
+        view: window(slice, *n, within..within + len)?,
+        within,
         len,
     })
 }
@@ -1045,9 +1046,11 @@ pub(crate) fn page_window(pages: &[usize], offset: usize, len: usize) -> Option<
 enum Bytes {
     Own(View),
     Kept {
+        /// Where the window's first page lies in the kept view.
         at: usize,
-        len: usize,
-        /// These bytes are this write's alone until it drops.
+        /// The bytes of it this write may touch, from `at`: its alone
+        /// while `_claim` lives.
+        used: std::ops::Range<usize>,
         _claim: Claim,
         /// Keeps the kept view mapped while the bytes are written.
         _section: Arc<Section>,
@@ -1055,9 +1058,11 @@ enum Bytes {
 }
 
 /// Bytes of a kept view that one write holds (R75): two requests filling
-/// the same pages at once would otherwise both hold `&mut` slices of the
-/// same bytes. The second takes a view of its own instead, as every write
-/// did before kept views (a separate mapping, as Rust sees it).
+/// the same bytes at once would otherwise both hold `&mut` slices of them.
+/// The second takes a view of its own instead, as every write did before
+/// kept views (a separate mapping, as Rust sees it). Claims are the bytes
+/// a write touches, not its pages: run 19 had 43,455 writes meet another
+/// on the same pages in 15 minutes, nearly all on other bytes of them.
 struct Claim {
     at: usize,
     len: usize,
@@ -1087,31 +1092,37 @@ impl Drop for Claim {
 }
 
 impl Bytes {
-    fn bytes(&mut self) -> &mut [u8] {
+    /// Bytes `range` of the window (from its first page), which must lie
+    /// within those it was made for.
+    fn range(&mut self, range: std::ops::Range<usize>) -> &mut [u8] {
         match self {
-            Bytes::Own(view) => view.bytes(),
-            // SAFETY: `len` committed bytes of the kept view, mapped while
-            // `_section` lives, and no other write's while `_claim` holds
-            // them.
-            Bytes::Kept { at, len, .. } => unsafe {
-                std::slice::from_raw_parts_mut(*at as *mut u8, *len)
-            },
+            Bytes::Own(view) => &mut view.bytes()[range],
+            Bytes::Kept { at, used, .. } => {
+                assert!(used.start <= range.start && range.end <= used.end, "outside the claimed bytes");
+                // SAFETY: committed bytes of the kept view, mapped while
+                // `_section` lives, and no other write's while `_claim`
+                // holds them (they lie within `used`).
+                unsafe { std::slice::from_raw_parts_mut((*at + range.start) as *mut u8, range.len()) }
+            }
         }
     }
 }
 
-fn window(slice: &Slice, n: usize) -> Option<Bytes> {
+/// Writable bytes of `n` pages from `slice` on, of which the write touches
+/// `used` (counted from the first page).
+fn window(slice: &Slice, n: usize, used: std::ops::Range<usize>) -> Option<Bytes> {
     if keep_views()
         && slice.index + n <= slice.section.pages
+        && used.end <= n * PAGE
         && let Some(kept) = slice.section.kept()
         && kept.commit(slice.index, n)
     {
-        let (at, len) = (kept.at.Value as usize + slice.index * PAGE, n * PAGE);
-        if let Some(claim) = Claim::take(at, len) {
+        let at = kept.at.Value as usize + slice.index * PAGE;
+        if let Some(claim) = Claim::take(at + used.start, used.len()) {
             VIEWS[3].fetch_add(1, Ordering::Relaxed);
             return Some(Bytes::Kept {
                 at,
-                len,
+                used,
                 _claim: claim,
                 _section: slice.section.clone(),
             });
@@ -2173,8 +2184,9 @@ mod tests {
         assert!(section.upgrade().is_none(), "unmapped with its section");
     }
 
-    /// A write whose pages another write in flight holds gets a view of
-    /// its own; once that one is done, the kept view again.
+    /// A write on bytes another write in flight holds gets a view of its
+    /// own, one beside them on the same page the kept view; once the first
+    /// is done, the kept view again.
     #[test]
     fn writes_on_the_same_pages_at_once_do_not_share_the_kept_view() {
         let pages = allocate(2);
@@ -2182,14 +2194,18 @@ mod tests {
         let mut first = page_window(&pages, 0, PAGE + 8).expect("one run");
         assert!(kept(&first));
         let mut second = page_window(&pages, PAGE, 16).expect("one run");
-        assert!(!kept(&second), "the second page is the first write's");
-        let elsewhere = page_window(&pages[1..], 0, 8).expect("one run");
-        assert!(!kept(&elsewhere));
+        assert!(!kept(&second), "bytes 0..8 of the second page are the first write's");
+        let mut beside = page_window(&pages, PAGE + 8, 8).expect("one run");
+        assert!(kept(&beside), "the next bytes of the same page are free");
+        let elsewhere = page_window(&pages[1..], 4, 8).expect("one run");
+        assert!(!kept(&elsewhere), "overlaps both");
         first.bytes()[PAGE..PAGE + 2].copy_from_slice(&[1, 2]);
         second.bytes()[2..4].copy_from_slice(&[3, 4]);
-        drop((first, second, elsewhere));
+        beside.bytes()[..2].copy_from_slice(&[5, 6]);
+        drop((first, second, beside, elsewhere));
         assert!(kept(&page_window(&pages, PAGE, 16).expect("one run")));
         assert_eq!(page_bytes(pages[1])[..4], [1, 2, 3, 4]);
+        assert_eq!(page_bytes(pages[1])[8..10], [5, 6]);
         assert_eq!(XMemFreePhysicalPages(2, pages.as_ptr()), 1);
     }
 
