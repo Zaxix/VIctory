@@ -67,6 +67,28 @@ core::arch::global_asm!(
     "    mov rdi, r10",
     "    xor eax, eax",
     "    ret",
+    // The same copy from title memory INTO title memory ([`move_title`]):
+    // either side may fault, and any fault there gives up.
+    ".globl victory_move_guarded",
+    ".globl victory_move_guarded_at",
+    ".globl victory_move_guarded_fault",
+    "victory_move_guarded:",
+    "    mov r9, rsi",
+    "    mov r10, rdi",
+    "    mov rdi, rcx",
+    "    mov rsi, rdx",
+    "    mov rcx, r8",
+    "victory_move_guarded_at:",
+    "    rep movsb",
+    "    mov rsi, r9",
+    "    mov rdi, r10",
+    "    mov eax, 1",
+    "    ret",
+    "victory_move_guarded_fault:",
+    "    mov rsi, r9",
+    "    mov rdi, r10",
+    "    xor eax, eax",
+    "    ret",
 );
 
 #[cfg(target_arch = "x86_64")]
@@ -77,6 +99,9 @@ unsafe extern "C" {
     fn victory_store_guarded(to: *mut u8, from: *const u8, len: usize) -> u32;
     static victory_store_guarded_at: u8;
     static victory_store_guarded_fault: u8;
+    fn victory_move_guarded(to: *mut u8, from: *const u8, len: usize) -> u32;
+    static victory_move_guarded_at: u8;
+    static victory_move_guarded_fault: u8;
 }
 
 /// Whether copies of title memory into host memory are made in place
@@ -176,6 +201,18 @@ fn install() {
                 || r.ExceptionCode == EXCEPTION_GUARD_PAGE
             {
                 context.Rip = (&raw const victory_store_guarded_fault) as u64;
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        // A title copy made in place ([`move_title`]): a fault on either
+        // side gives up, and the caller goes to the kernel's copy.
+        if context.Rip == (&raw const victory_move_guarded_at) as u64 {
+            if r.ExceptionCode == EXCEPTION_ACCESS_VIOLATION
+                || r.ExceptionCode == EXCEPTION_IN_PAGE_ERROR
+                || r.ExceptionCode == EXCEPTION_GUARD_PAGE
+            {
+                context.Rip = (&raw const victory_move_guarded_fault) as u64;
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
             return EXCEPTION_CONTINUE_SEARCH;
@@ -440,6 +477,157 @@ pub(crate) const fn least() -> usize {
 }
 
 /// With the frame line: what [`copy`] did per frame over `frames`.
+/// Whether the title's own copies of its memory (a list's buffer copy,
+/// run at submission) are made in place, on several threads when large
+/// (`VICTORY_TITLE_COPY_PLAIN`; on with the faster defaults, `=0` off,
+/// `alt` twenty seconds each way in turn).
+///
+/// Run 19: the 27 title copies of a heavy frame took 24 ms of the
+/// submitting thread, which the card waited for. They went through the
+/// kernel's copy (`ReadProcessMemory` on our own process, about 3 GB a
+/// second), one thread, while the copy in place moves several times that,
+/// and a large one is split over the helper threads. A page that is not
+/// there or not writable on either side ends the copy in place, and the
+/// kernel's copy does it all again, as before.
+pub(crate) fn title_moves_on() -> bool {
+    /// 0 off, 1 on, 2 in turn.
+    static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    let mode = *MODE.get_or_init(|| {
+        let mode = match std::env::var("VICTORY_TITLE_COPY_PLAIN").as_deref() {
+            Ok("alt") => 2,
+            Ok("0") | Ok("") => 0,
+            Ok(_) => 1,
+            Err(_) => u8::from(crate::fast::fast()),
+        };
+        if cfg!(not(target_arch = "x86_64")) {
+            return 0;
+        }
+        if mode != 0 {
+            install();
+        }
+        tracing::info!(
+            "the title's copies of its memory are made {} (VICTORY_TITLE_COPY_PLAIN: 0 through the kernel, alt in turn)",
+            [
+                "through the kernel's copy, as before",
+                "in place, large ones on several threads, the kernel's copy behind them",
+                "in place and through the kernel in turn, twenty seconds each"
+            ][usize::from(mode)]
+        );
+        mode
+    });
+    match mode {
+        0 => false,
+        1 => true,
+        _ => {
+            static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            let on = (EPOCH.get_or_init(std::time::Instant::now).elapsed().as_secs() / 20).is_multiple_of(2);
+            static LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+            if LAST.swap(u8::from(on), Relaxed) != u8::from(on) {
+                tracing::info!(
+                    "the title's copies of its memory are made from now (VICTORY_TITLE_COPY_PLAIN=alt): {}",
+                    if on { "IN PLACE" } else { "through the kernel" }
+                );
+            }
+            on
+        }
+    }
+}
+
+/// Since the last line: title copies made in place, their bytes, those
+/// split over threads, those that met a page that was not there (then
+/// copied by the kernel), and those not tried (overlapping, or a fault
+/// there lately).
+static MOVES: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+
+/// From this many bytes a title copy is split over the helper threads.
+const MOVE_WIDE: usize = 2 << 20;
+/// About this many bytes to each piece of a split copy.
+const MOVE_PIECE: usize = 1 << 20;
+
+/// One guarded copy, title memory to title memory.
+#[cfg(target_arch = "x86_64")]
+fn move_guarded(to: *mut u8, from: *const u8, len: usize) -> bool {
+    // SAFETY: a page that is not there, or not writable, on either side
+    // ends the copy with 0 instead of a fault ([`install`]); the caller
+    // has opened the write-watch guards of `to`.
+    unsafe { victory_move_guarded(to, from, len) != 0 }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn move_guarded(_: *mut u8, _: *const u8, _: usize) -> bool {
+    false
+}
+
+/// With [`title_moves_on`]: copies `len` bytes of title memory at `from`
+/// to title memory at `to` in place, a large copy in pieces on the helper
+/// threads; false if it is off, the two overlap, either side faulted
+/// lately, or a page was not there or not writable (then some of `to` may
+/// have been written: the caller copies it all again through the kernel).
+///
+/// The caller has opened the write-watch guards of `to`
+/// (`crate::watch::writing`) and tells the journal of the write after.
+pub(crate) fn move_title(to: *mut u8, from: *const u8, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    if !title_moves_on() {
+        return false;
+    }
+    let (t, f) = (to as usize, from as usize);
+    if t < f.saturating_add(len) && f < t.saturating_add(len) {
+        MOVES[4].fetch_add(1, Relaxed);
+        return false;
+    }
+    if faulted_lately(f, len) || faulted_lately(t, len) {
+        MOVES[4].fetch_add(1, Relaxed);
+        return false;
+    }
+    let whole = if len >= MOVE_WIDE {
+        MOVES[2].fetch_add(1, Relaxed);
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        let failed_ref = &failed;
+        let jobs: Vec<Box<dyn FnOnce() + Send + '_>> = (0..len)
+            .step_by(MOVE_PIECE)
+            .map(|at| {
+                let n = MOVE_PIECE.min(len - at);
+                let (to, from) = (t + at, f + at);
+                Box::new(move || {
+                    if !failed_ref.load(Relaxed) && !move_guarded(to as *mut u8, from as *const u8, n) {
+                        failed_ref.store(true, Relaxed);
+                    }
+                }) as Box<dyn FnOnce() + Send + '_>
+            })
+            .collect();
+        crate::shadow::wide_scoped(crate::shadow::ahead_workers(), jobs);
+        !failed.into_inner()
+    } else {
+        move_guarded(to, from, len)
+    };
+    if whole {
+        MOVES[0].fetch_add(1, Relaxed);
+        MOVES[1].fetch_add(len as u64, Relaxed);
+    } else {
+        MOVES[3].fetch_add(1, Relaxed);
+        note_fault(f, len);
+        note_fault(t, len);
+    }
+    whole
+}
+
+/// The line of [`move_title`]'s counts.
+pub(crate) fn moves_line(frames: f64) {
+    if !title_moves_on() {
+        return;
+    }
+    let [moves, bytes, split, gone, untried] = [0, 1, 2, 3, 4].map(|i| MOVES[i].swap(0, Relaxed) as f64 / frames);
+    tracing::info!(
+        "the title's copies of its memory made in place per frame (VICTORY_TITLE_COPY_PLAIN): {moves:.1}, {:.1} MB, \
+         {split:.1} of them split over the helper threads; {gone:.1} met a page that was not there or not writable and \
+         went through the kernel's copy; {untried:.1} not tried (overlapping, or a fault there lately)",
+        bytes / 1e6
+    );
+}
+
 pub(crate) fn line(frames: f64) {
     if !on() {
         return;

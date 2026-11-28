@@ -616,6 +616,63 @@ fn join_parts() -> bool {
     }
 }
 
+/// Whether parts joined so far go to the host now, before more are joined,
+/// because the card has nothing of ours left to run (`VICTORY_EARLY_START`;
+/// on with the faster defaults, `=0` off, `alt` twenty seconds each way in
+/// turn).
+///
+/// Run 19: of a 140 ms world frame the card stood idle 50-55 ms while the
+/// submitting thread prepared, nearly all of it behind us. Parts are joined
+/// until the lines stop at a wait or the join is full, and only then is the
+/// whole join prepared and sent: the card waits for all of that work even
+/// when the first part could have been running. With this, a part taken
+/// while the card is idle goes alone at once; while the card runs it, the
+/// parts after it are joined as before, so joins grow when the card is busy
+/// and stay small only when it would otherwise wait.
+#[cfg(windows)]
+fn early_start_now() -> bool {
+    /// 0 off, 1 on, 2 in turn.
+    static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    let mode = *MODE.get_or_init(|| {
+        let mode = match std::env::var("VICTORY_EARLY_START").as_deref() {
+            Ok("alt") => 2,
+            Ok("0") | Ok("") => 0,
+            Ok(_) => 1,
+            Err(_) => u8::from(crate::fast::fast()),
+        };
+        tracing::info!(
+            "joined parts {} (VICTORY_EARLY_START: 0 off, alt in turn)",
+            [
+                "go to the host when the lines stop or the join is full, as before",
+                "go to the host at once while the card has nothing of ours to run",
+                "go at once while the card is idle and as before, in turn, twenty seconds each"
+            ][usize::from(mode)]
+        );
+        mode
+    });
+    let on = match mode {
+        0 => return false,
+        1 => true,
+        _ => {
+            static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            let on = (EPOCH.get_or_init(std::time::Instant::now).elapsed().as_secs() / 20).is_multiple_of(2);
+            static LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+            if LAST.swap(u8::from(on), Ordering::Relaxed) != u8::from(on) {
+                tracing::info!(
+                    "joined parts from now (VICTORY_EARLY_START=alt): {}",
+                    if on { "AT ONCE WHILE THE CARD IS IDLE" } else { "as before" }
+                );
+            }
+            on
+        }
+    };
+    let idle = on && crate::host::host().is_some_and(|host| host.card_idle());
+    if idle {
+        JOINED[5].fetch_add(1, Ordering::Relaxed);
+    }
+    idle
+}
+
 /// The most parts joined into one host submission (`VICTORY_JOIN_MOST`, 16).
 #[cfg(windows)]
 fn join_most() -> usize {
@@ -683,7 +740,8 @@ fn join<T>(mut lists: Vec<T>, mut order: Vec<usize>, more: Vec<T>, more_order: V
 /// Parts joined, host submissions they went in, their lists, signals
 /// delivered behind them, and waits passed for a write of a part taken.
 #[cfg(windows)]
-static JOINED: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+/// And joins sent early because the card was idle ([`early_start_now`]).
+static JOINED: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 
 /// Gives the host what [`Joined`] holds, as one submission, delivers the
 /// signals met behind it, and takes the marks off the lines. Called with
@@ -699,13 +757,14 @@ fn send_joined(joined: &mut Joined) {
         if sent.is_multiple_of(2048) {
             let n: Vec<u64> = JOINED.iter().map(|n| n.swap(0, Ordering::Relaxed)).collect();
             tracing::info!(
-                "parts joined (VICTORY_JOIN_PARTS=1): {} parts went to the host in {} submissions ({:.1} parts, {:.1} lists each), {} signals delivered behind them, {} waits passed for a write of a part not sent yet",
+                "parts joined (VICTORY_JOIN_PARTS=1): {} parts went to the host in {} submissions ({:.1} parts, {:.1} lists each), {} signals delivered behind them, {} waits passed for a write of a part not sent yet, {} sent early with the card idle (VICTORY_EARLY_START)",
                 n[0],
                 n[1],
                 n[0] as f64 / n[1].max(1) as f64,
                 n[2] as f64 / n[1].max(1) as f64,
                 n[3],
-                n[4]
+                n[4],
+                n[5]
             );
         }
         match crate::host::host() {
@@ -845,7 +904,7 @@ fn release_held_now(all: bool) {
                                 joined.marked.push(q);
                             }
                             joined.add(lists, order);
-                            if joined.full() {
+                            if joined.full() || early_start_now() {
                                 drop(held);
                                 send_joined(&mut joined);
                                 held = lock(line);

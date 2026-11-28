@@ -20,11 +20,36 @@ pub fn run(
     victory_hle::modules::lifecycle::wait_for_previous();
     let cfg = victory_core::Config::load()?;
     let original = std::fs::read(exe).with_context(|| format!("reading {}", exe.display()))?;
-    let prepared = victory_loader::prepare(&original)?;
+    let mut prepared = victory_loader::prepare(&original)?;
     let hash = prepared.original_hash.to_hex();
     match victory_game::identify(&hash) {
         Some(build) => println!("build          {} ({hash})", build.label),
         None => println!("build          unknown ({hash})"),
+    }
+    // A smaller output than the Series X's 4K one, the scene smaller with
+    // it (`crate::output`, `VICTORY_OUTPUT`); the patched image is kept in
+    // a folder of its own beside the stock one.
+    let mut images_folder = "images".to_owned();
+    match crate::output::asked() {
+        Ok(Some(output)) if matches!(console, Console::SeriesX) => {
+            match crate::output::prepare(&mut prepared, output) {
+                Ok(()) => {
+                    let size = format!("{}x{}", output.width, output.height);
+                    // SAFETY: nothing else runs yet; the display mode list
+                    // and the draws read these later.
+                    unsafe {
+                        std::env::set_var("VICTORY_DISPLAY_MODE", &size);
+                        std::env::set_var("VICTORY_OUTPUT_SIZE", &size);
+                    }
+                    println!("output         {size}, scene {}x{} (VICTORY_OUTPUT; 4k: as the console)", output.scene.0, output.scene.1);
+                    images_folder = format!("images/output-{size}-scene-{}x{}", output.scene.0, output.scene.1);
+                }
+                Err(e) => println!("output         as the console's (VICTORY_OUTPUT not applied: {e:#})"),
+            }
+        }
+        Ok(Some(_)) => println!("output         as the console's (VICTORY_OUTPUT is for the Series X profile)"),
+        Ok(None) => println!("output         as the console's (VICTORY_OUTPUT=4k)"),
+        Err(e) => return Err(e),
     }
     println!("source         {}", env!("VICTORY_SOURCE"));
     // Every switch of ours set for this run, so a log says what it ran.
@@ -38,7 +63,7 @@ pub fn run(
         if switches.is_empty() { "none set".to_owned() } else { switches.join(" ") }
     );
 
-    let images = cfg.cache_subdir("images")?;
+    let images = cfg.cache_subdir(&images_folder)?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
     let image = victory_loader::load(&prepared, &images)?;
     // The program is mapped from the copy `load` wrote: the file's bytes

@@ -5904,6 +5904,18 @@ impl Host {
         Some(clock)
     }
 
+    /// Whether the card has run everything of ours sent to it: nothing of
+    /// ours is queued now (the clock's last signal is reached). False
+    /// before anything was sent, or without the clock.
+    pub(crate) fn card_idle(&self) -> bool {
+        let Some(clock) = self.card_clock() else {
+            return false;
+        };
+        let sent = clock.state.lock().unwrap_or_else(|e| e.into_inner()).0;
+        // SAFETY: a plain query of our fence.
+        sent > 0 && unsafe { clock.fence.GetCompletedValue() } >= sent
+    }
+
     /// Lists of ours just went to the queue: the clock's signal goes
     /// behind them, and an idle stretch of the card, if one was under way,
     /// ends here ([`CARD_CLOCK_US`]).
@@ -10762,7 +10774,13 @@ pub(crate) fn copy_mapped(dst: *mut u8, src: *const u8, len: usize, title_dst: b
     let moved = std::time::Instant::now();
     // Into host memory: in place first, if asked for (`crate::plaincopy`);
     // through the kernel if that is off or met a page that was not there.
-    let whole = (!title_dst && crate::plaincopy::copy(dst, src, len)) || read(src, dst, len);
+    // A title copy in place, large ones on several threads
+    // (`crate::plaincopy::move_title`).
+    let whole = if title_dst {
+        crate::plaincopy::move_title(dst, src, len) || read(src, dst, len)
+    } else {
+        crate::plaincopy::copy(dst, src, len) || read(src, dst, len)
+    };
     #[cfg(feature = "diagnostics")]
     crate::copystat::add(crate::copystat::C::MoveUs, moved.elapsed().as_micros() as u64);
     if whole {
@@ -11224,6 +11242,7 @@ impl Meter {
         crate::queue2::line(frames);
         crate::plaincopy::line(frames);
         crate::plaincopy::store_line(frames);
+        crate::plaincopy::moves_line(frames);
         crate::watch::guards_line(frames);
         crate::shadow::readback_reuse_line(frames);
         #[cfg(feature = "diagnostics")]

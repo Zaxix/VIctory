@@ -55,10 +55,22 @@
 //! - `VICTORY_GUARD_MARKS`: a write told before it lands (`watch::writing`,
 //!   2,000 a frame: write-backs and storage) looks at lock-free marks of
 //!   the guarded blocks and takes the guards' lock only if one is there
-//!   (run 16: 49 ms a frame of waiting for that lock there, all threads).
+//!   (run 16: 49 ms a frame of waiting for that lock there, all threads);
+//! - `VICTORY_TITLE_COPY_PLAIN`: the title's own copies of its memory made
+//!   in place, large ones split over the helper threads, the kernel's copy
+//!   behind them (run 19: 27 title copies, 24 ms of a heavy frame's
+//!   preparing, all through the kernel on one thread);
+//! - `VICTORY_EARLY_START`: a joined part goes to the host at once while
+//!   the card has nothing of ours to run (run 19: the card idle 50-55 ms of
+//!   a 140 ms frame while the submitting thread prepared).
 //!
-//! `SETTLE_ROOM`, `LOOKUP_CACHE`, `PARALLEL_REFRESH`, `CARD_SYNC_BATCH` and
-//! `WRITE_PLAIN` also take `alt` (twenty seconds each way, in turn).
+//! The runner's `VICTORY_OUTPUT` follows `VICTORY_FAST` too: a 2560x1440
+//! output with the scene at 1920x1080, not the console's 3840x2160 with the
+//! scene at 2560x1440 (`apps/victory/src/output.rs`).
+//!
+//! `SETTLE_ROOM`, `LOOKUP_CACHE`, `PARALLEL_REFRESH`, `CARD_SYNC_BATCH`,
+//! `WRITE_PLAIN`, `TITLE_COPY_PLAIN` and `EARLY_START` also take `alt`
+//! (twenty seconds each way, in turn).
 //!
 //! Each still takes its own `=0` (or `=1`); `VICTORY_FAST=0` puts every
 //! one of them back to off, as in runs 1-9, in one go.
@@ -66,7 +78,7 @@
 use std::sync::OnceLock;
 
 /// The switches [`on`] gives a default to, for the start-up line.
-const SWITCHES: [&str; 16] = [
+const SWITCHES: [&str; 19] = [
     "VICTORY_ASYNC_SUBMIT",
     "VICTORY_QUEUE2",
     "VICTORY_COPY_PLAIN",
@@ -83,6 +95,9 @@ const SWITCHES: [&str; 16] = [
     "VICTORY_REFRESH_PAGES",
     "VICTORY_WRITE_PLAIN",
     "VICTORY_GUARD_MARKS",
+    "VICTORY_TITLE_COPY_PLAIN",
+    "VICTORY_EARLY_START",
+    "VICTORY_OUTPUT",
 ];
 
 /// Whether the faster defaults hold (`VICTORY_FAST`, unset or anything but
