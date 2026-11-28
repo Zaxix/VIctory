@@ -35,6 +35,10 @@ mod drvwatch;
 #[cfg(windows)]
 mod fpsbox;
 #[cfg(windows)]
+mod menu;
+#[cfg(windows)]
+pub use menu::open as menu_open;
+#[cfg(windows)]
 mod stats;
 #[cfg(windows)]
 mod spread;

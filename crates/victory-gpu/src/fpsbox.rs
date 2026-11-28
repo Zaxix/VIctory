@@ -43,19 +43,44 @@ static TENTHS: AtomicU32 = AtomicU32::new(u32::MAX);
 
 /// What is drawn: nothing, the frame rate alone, or the whole box.
 #[derive(Clone, Copy, PartialEq)]
+#[repr(u8)]
 enum Mode {
     Off,
     Rate,
     All,
 }
 
-fn mode() -> Mode {
-    static MODE: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| match std::env::var("VICTORY_FPS_COUNTER").as_deref() {
-        Ok("0") => Mode::Off,
-        Ok("fps") => Mode::Rate,
+/// The mode as `VICTORY_FPS_COUNTER` says: `0` off, `fps` the rate alone,
+/// anything else the whole box.
+fn mode_of(value: &str) -> Mode {
+    match value {
+        "0" => Mode::Off,
+        "fps" => Mode::Rate,
         _ => Mode::All,
-    })
+    }
+}
+
+/// [`Mode`] as a number, 3 before it is first read; the F1 menu changes it
+/// while the title runs ([`set_mode`]).
+static MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(3);
+
+fn mode() -> Mode {
+    match MODE.load(Ordering::Relaxed) {
+        0 => Mode::Off,
+        1 => Mode::Rate,
+        2 => Mode::All,
+        _ => {
+            let mode = mode_of(std::env::var("VICTORY_FPS_COUNTER").as_deref().unwrap_or(""));
+            let _ = MODE.compare_exchange(3, mode as u8, Ordering::Relaxed, Ordering::Relaxed);
+            mode
+        }
+    }
+}
+
+/// From the F1 menu: what `VICTORY_FPS_COUNTER=value` shows, from the next
+/// frame on.
+pub(crate) fn set_mode(value: &str) {
+    MODE.store(mode_of(value) as u8, Ordering::Relaxed);
 }
 
 /// The frame rate just measured.
@@ -66,7 +91,7 @@ pub(crate) fn set(fps: f64) {
 }
 
 /// A glyph's seven rows, five dots each (bit 4 is the left one).
-fn glyph(c: char) -> [u8; 7] {
+pub(crate) fn glyph(c: char) -> [u8; 7] {
     match c {
         '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
         '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
@@ -101,6 +126,24 @@ fn glyph(c: char) -> [u8; 7] {
         'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
         'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
         'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+        // For the F1 menu.
+        'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+        '-' => [0, 0, 0, 0b11111, 0, 0, 0],
+        ':' => [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0],
+        ',' => [0, 0, 0, 0, 0b01100, 0b00100, 0b01000],
+        '>' => [0b01000, 0b00100, 0b00010, 0b00001, 0b00010, 0b00100, 0b01000],
+        '<' => [0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010],
+        '(' => [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
+        ')' => [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
+        '=' => [0, 0, 0b11111, 0, 0b11111, 0, 0],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0, 0b00100],
+        '?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
+        '\'' => [0b00100, 0b00100, 0b01000, 0, 0, 0, 0],
         _ => [0; 7],
     }
 }
@@ -154,7 +197,7 @@ fn fit(line: &str, columns: usize) -> String {
 }
 
 /// Bytes a pixel of a swap chain format this layer presents in, or none.
-fn pixel_bytes(format: DXGI_FORMAT) -> Option<usize> {
+pub(crate) fn pixel_bytes(format: DXGI_FORMAT) -> Option<usize> {
     match format {
         DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_R10G10B10A2_UNORM => Some(4),
         DXGI_FORMAT_R16G16B16A16_FLOAT => Some(8),
@@ -163,7 +206,7 @@ fn pixel_bytes(format: DXGI_FORMAT) -> Option<usize> {
 }
 
 /// One pixel of `format`: of the text (`lit`) or of the box behind it.
-fn pixel(format: DXGI_FORMAT, lit: bool, out: &mut [u8]) {
+pub(crate) fn pixel(format: DXGI_FORMAT, lit: bool, out: &mut [u8]) {
     // The text: a bright yellow. The box: nearly black.
     let (r, g, b): (f32, f32, f32) = if lit { (1.0, 0.92, 0.16) } else { (0.03, 0.03, 0.03) };
     let byte = |v: f32| (v * 255.0).round() as u8;
@@ -201,7 +244,7 @@ fn half(v: f32) -> u16 {
 /// width and height in pixels and, row by row from the top, whether each
 /// pixel is text. A glyph takes six dots across with its gap and a line
 /// nine down with its gap; a pad of two dots lies all round.
-fn bitmap(text: &str, scale: u32) -> (u32, u32, Vec<bool>) {
+pub(crate) fn bitmap(text: &str, scale: u32) -> (u32, u32, Vec<bool>) {
     let lines: Vec<Vec<char>> = text.split('\n').map(|l| l.chars().collect()).collect();
     let longest = lines.iter().map(Vec::len).max().unwrap_or(0).max(1) as u32;
     let pad = 2 * scale;

@@ -19,6 +19,9 @@ pub fn run(
     // A title that relaunched itself: the old process must be gone first.
     victory_hle::modules::lifecycle::wait_for_previous();
     let cfg = victory_core::Config::load()?;
+    // What the F1 menu saved, over the switches of the window the game was
+    // started from, before anything reads a switch.
+    crate::settings::apply(&cfg.data_subdir("settings")?.join("defeat-settings.txt"));
     let original = std::fs::read(exe).with_context(|| format!("reading {}", exe.display()))?;
     let mut prepared = victory_loader::prepare(&original)?;
     let hash = prepared.original_hash.to_hex();

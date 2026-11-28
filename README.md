@@ -113,6 +113,13 @@ faster defaults:
 - `VICTORY_EARLY_START`: a joined part goes to the card at once when the card has nothing else to run,
   instead of waiting until the whole join is prepared.
 
+**F1 opens Defeat's settings menu** in the game: render size, the FPS box, the speed switches and ray
+tracing. Up/Down picks, Left/Right changes, Enter runs a line, and F1 or Esc closes it. While it is open
+the game gets no keyboard. Changes are saved at once to `settings\defeat-settings.txt` in the data
+folder. The runner applies that file at every start, over the switches of the window you started from.
+The FPS box changes at once; the rest take effect at the next start. DLSS and frame generation come
+next (Defeat's own, with VIctory-NVIDIA as a reference).
+
 `cargo xtask runstats run.txt` reads a run log into these figures (by draws per frame, and by the
 phases of any `VICTORY_X=alt` switch).
 

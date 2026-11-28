@@ -8,6 +8,8 @@ mod inspect;
 #[cfg(windows)]
 mod output;
 mod run;
+#[cfg(windows)]
+mod settings;
 mod shader;
 mod translate;
 #[cfg(windows)]
