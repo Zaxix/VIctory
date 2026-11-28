@@ -117,8 +117,17 @@ faster defaults:
 tracing. Up/Down picks, Left/Right changes, Enter runs a line, and F1 or Esc closes it. While it is open
 the game gets no keyboard. Changes are saved at once to `settings\defeat-settings.txt` in the data
 folder. The runner applies that file at every start, over the switches of the window you started from.
-The FPS box changes at once; the rest take effect at the next start. DLSS and frame generation come
-next (Defeat's own, with VIctory-NVIDIA as a reference).
+The FPS box changes at once; the rest take effect at the next start.
+
+**DLSS Super Resolution (Defeat's own; not run on the owner's PC yet).** Fetch NVIDIA's files once with
+`powershell -ExecutionPolicy Bypass -File scripts\get-dlss.ps1`. It downloads Streamline SDK 2.14.16 from
+NVIDIA's own GitHub and keeps the four DLLs DLSS loads and their licences in `streamline\` in the data folder.
+Then pick a DLSS mode in the F1 menu (or set `VICTORY_DLSS=quality|balanced|performance|dlaa`). The runner
+starts Streamline before the card is set up, then switches the title onto its FidelityFX path (the one the
+Series S uses) at the mode's scale; at a 1080p output, quality draws the scene at 1280x720. The title's
+upscale call is replaced by DLSS in the same place of its command list, from the same colour, depth and
+motion vectors. If anything is missing (the files, the card, a texture), the title's own upscaling runs and
+the log says why. Frame generation comes next.
 
 `cargo xtask runstats run.txt` reads a run log into these figures (by draws per frame, and by the
 phases of any `VICTORY_X=alt` switch).
