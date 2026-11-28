@@ -50,6 +50,12 @@ const ITEMS: &[Item] = &[
         ],
         live: false,
     },
+    Item {
+        var: "VICTORY_DLSS",
+        label: "DLSS",
+        values: &[("0", "OFF"), ("quality", "QUALITY"), ("balanced", "BALANCED"), ("performance", "PERFORMANCE"), ("dlaa", "DLAA (NATIVE)")],
+        live: false,
+    },
     Item { var: "VICTORY_FPS_COUNTER", label: "FPS BOX", values: &[("all", "FPS AND LOAD"), ("fps", "FPS ONLY"), ("0", "OFF")], live: true },
     Item { var: "VICTORY_FAST", label: "FASTER DEFAULTS", values: &[("1", "ON"), ("0", "OFF")], live: false },
     Item { var: "VICTORY_EARLY_START", label: "EARLY START", values: &[("1", "ON"), ("0", "OFF"), ("alt", "IN TURN")], live: false },
@@ -234,7 +240,8 @@ fn lines(state: &State) -> Vec<String> {
         out.push(fit(format!("{mark} {action}")));
     }
     out.push(fit(String::new()));
-    out.push(fit("DLSS AND FRAME GENERATION: NOT YET, THEY COME NEXT".into()));
+    out.push(fit("DLSS NEEDS NVIDIA'S FILES: SCRIPTS GET-DLSS.PS1".into()));
+    out.push(fit("FRAME GENERATION: NOT YET, IT COMES NEXT".into()));
     out.push(fit(if state.note.is_empty() { "CHANGES ARE SAVED AT ONCE".into() } else { state.note.clone() }));
     out
 }

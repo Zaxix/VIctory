@@ -1426,6 +1426,8 @@ fn create() -> windows::core::Result<Host> {
             D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device)?;
         }
         let device = device.ok_or_else(windows::core::Error::empty)?;
+        // DLSS (`crate::dlss`): Streamline is given the device.
+        crate::dlss::device_made(&device);
         // `VICTORY_D3D12_BACKGROUND=0`: the runtime's background work (the
         // driver compiling shaders again on the "D3D Background Thread"s,
         // for minutes after pipelines were made or loaded) is switched off.
@@ -11243,6 +11245,7 @@ impl Meter {
         crate::plaincopy::line(frames);
         crate::plaincopy::store_line(frames);
         crate::plaincopy::moves_line(frames);
+        crate::dlss::line(frames);
         crate::watch::guards_line(frames);
         crate::shadow::readback_reuse_line(frames);
         #[cfg(feature = "diagnostics")]

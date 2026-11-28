@@ -30,9 +30,9 @@ jobs:
       # the owner's whole shader cache translate again. (The float compares in valu_tests.rs
       # are meant: `a < b || a > b` is not `a != b` for NaN.)
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings -A clippy::precedence -A clippy::nonminimal_bool -A clippy::neg_cmp_op_on_partial_ord -A clippy::double_comparisons
+        run: cargo clippy --keep-going --workspace --all-targets --locked -- -D warnings -A clippy::precedence -A clippy::nonminimal_bool -A clippy::neg_cmp_op_on_partial_ord -A clippy::double_comparisons
       - name: Clippy, diagnostics build
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -A clippy::precedence -A clippy::nonminimal_bool -A clippy::neg_cmp_op_on_partial_ord -A clippy::double_comparisons
+        run: cargo clippy --keep-going --workspace --all-targets --all-features --locked -- -D warnings -A clippy::precedence -A clippy::nonminimal_bool -A clippy::neg_cmp_op_on_partial_ord -A clippy::double_comparisons
       # Includes xtask's repository_passes_policy, the asset-policy check.
       - name: Tests
         run: cargo test --workspace --locked --exclude victory-gpu

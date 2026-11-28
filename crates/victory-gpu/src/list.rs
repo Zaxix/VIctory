@@ -172,6 +172,26 @@ pub(crate) fn tables_done(lists: &[This]) {
     }
 }
 
+/// Work of ours recorded at this place of a title list (DLSS in place of
+/// the title's upscaling, `crate::dlss`): `work` gets the host list the
+/// title's calls record onto now; if it says it recorded something, the
+/// list's own state (pipeline, roots, heaps, targets) is set again behind
+/// it. False if the title list has no host list.
+#[cfg(windows)]
+pub(crate) fn external(this: This, work: impl FnOnce(&crate::host::HostList) -> bool) -> bool {
+    if host_list(this).is_none() {
+        return false;
+    }
+    let mut ran = false;
+    with_state(this, |host, state| {
+        if work(host) {
+            state.replay(host);
+        }
+        ran = true;
+    });
+    ran
+}
+
 /// The host list behind a title list, if there is a host GPU.
 #[cfg(windows)]
 pub(crate) fn host_list<'a>(this: This) -> Option<&'a crate::host::HostList> {

@@ -54,6 +54,27 @@ pub fn run(
         Ok(None) => println!("output         as the console's (VICTORY_OUTPUT=4k)"),
         Err(e) => return Err(e),
     }
+    // DLSS (`VICTORY_DLSS`, `victory_hle::dlss`): Streamline is started
+    // before anything of the host GPU, and fails soft. Only if it starts
+    // does the title render through its FidelityFX path, at the DLSS
+    // mode's scale of the output, which DLSS then takes over.
+    if let Some(mode) = victory_hle::dlss::asked() {
+        let dir = std::env::var_os("VICTORY_DLSS_DIR")
+            .map(std::path::PathBuf::from)
+            .map_or_else(|| cfg.data_subdir("streamline"), Ok)?;
+        let started = if matches!(console, Console::SeriesX) {
+            victory_hle::dlss::init(&dir, mode)
+        } else {
+            Err("DLSS is for the Series X profile".to_owned())
+        };
+        match started.and_then(|()| crate::output::prepare_upscaler(&mut prepared, mode.scale(), mode.ffx_mode()).map_err(|e| format!("{e:#}"))) {
+            Ok(()) => {
+                println!("dlss           {} (scene at {} of the output, NVIDIA's files from {})", mode.name(), mode.scale(), dir.display());
+                images_folder.push_str(&format!("-dlss-{}", mode.name()));
+            }
+            Err(why) => println!("dlss           off: {why}"),
+        }
+    }
     println!("source         {}", env!("VICTORY_SOURCE"));
     // Every switch of ours set for this run, so a log says what it ran.
     let mut switches: Vec<String> = std::env::vars()
@@ -127,6 +148,8 @@ pub fn run(
         inner: &resolver,
         dlls: &dlls,
     };
+    // With DLSS: the title's FidelityFX calls go through ours first.
+    let with_dlls = victory_hle::modules::fidelityfx::Interpose { inner: &with_dlls };
     victory_loader::count_calls_into(&title_calls_watched());
     let with_dlls = victory_loader::Counting { inner: &with_dlls };
     let show = |name: &str, report: BindReport| {

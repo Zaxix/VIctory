@@ -37,6 +37,8 @@ mod fpsbox;
 #[cfg(windows)]
 mod menu;
 #[cfg(windows)]
+pub mod dlss;
+#[cfg(windows)]
 pub use menu::open as menu_open;
 #[cfg(windows)]
 mod stats;

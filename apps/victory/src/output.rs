@@ -104,6 +104,60 @@ pub(crate) fn prepare(image: &mut PreparedImage, output: Output) -> Result<()> {
     Ok(())
 }
 
+/// The title's renderer choice: `mov eax, 6; cmovne eax, ecx` (6, its own
+/// temporal pass on Series X; 7, the FidelityFX path, on Series S).
+const RENDERER_SELECTION: u32 = 0x007e_9421;
+const STOCK_RENDERER_SELECTION: &str = "f0633abf37df17124108b1e37be64645bd4b2412b0524c2f89334f22bd948464";
+/// The FidelityFX path's sizing: the console check's result is noted as
+/// the FidelityFX quality mode and picks the scaled branch, whose scale
+/// multiplies the output size.
+const UPSCALER_SIZING: u32 = 0x028e_f69a;
+const STOCK_UPSCALER_SIZING: &str = "2ae2ac102d12ca003cb218413ef018e4dba68fc2003654a30c1743e13a820ffd";
+/// The native branch's load of 1.0, and the scaled branch's of the scale.
+const NATIVE_LOAD: u32 = 0x028e_f6a8;
+const STOCK_NATIVE_LOAD: &str = "2579c24601d173b086a8136edf54ffd82720e6bf186f9139274bb09a45ddadf5";
+const SCALED_LOAD: u32 = 0x028e_f6b2;
+const STOCK_SCALED_LOAD: &str = "e218882c95d2e16163a409d55b3451519414eb87c4d6220785dc09852d4e14f4";
+/// The 2/3 the scaled branch loads, shared with other code (not written).
+const UPSCALER_SCALE: u32 = 0x0615_d95c;
+
+/// Makes the title render through its FidelityFX path (renderer 7, as on
+/// Series S) with the scene at `scale` of the output, noting `ffx_mode` as
+/// its FidelityFX quality mode, so that DLSS can take its upscale
+/// dispatches (`victory_hle::modules::fidelityfx`). The temporal pass's
+/// scale is set to the same. Every place is checked against the stock
+/// bytes first (the temporal scale may be [`prepare`]'s); nothing is
+/// written if one differs. The places and the patch are DexNom's finding
+/// (DexNom/VIctory, GPL-3.0-or-later), carried in VIctory-NVIDIA.
+pub(crate) fn prepare_upscaler(image: &mut PreparedImage, scale: f32, ffx_mode: u8) -> Result<()> {
+    ensure!(
+        image.original_hash.to_hex().as_str() == RETAIL_BUILD,
+        "the FidelityFX path is only known for the retail build {RETAIL_BUILD}"
+    );
+    ensure!(same(&field::<8>(image, RENDERER_SELECTION)?[..], STOCK_RENDERER_SELECTION), "unexpected renderer selection");
+    ensure!(same(&field::<14>(image, UPSCALER_SIZING)?[..], STOCK_UPSCALER_SIZING), "unexpected upscaler sizing");
+    ensure!(same(&field::<10>(image, NATIVE_LOAD)?[..], STOCK_NATIVE_LOAD), "unexpected native scale load");
+    ensure!(same(&field::<8>(image, SCALED_LOAD)?[..], STOCK_SCALED_LOAD), "unexpected scaled load");
+    ensure!(*field::<4>(image, UPSCALER_SCALE)? == (2.0f32 / 3.0).to_le_bytes(), "unexpected upscaler scale");
+    let temporal = f32::from_le_bytes(*field::<4>(image, TEMPORAL_SCALE)?);
+    ensure!(temporal > 0.0 && temporal <= 1.0, "unexpected temporal scene scale {temporal}");
+    ensure!(scale > 0.0 && scale <= 1.0, "a scene scale of {scale}");
+    // `mov eax, 7` every time it is asked (the console check has run).
+    *field::<8>(image, RENDERER_SELECTION)? = [0xb8, 7, 0, 0, 0, 0x90, 0x90, 0x90];
+    // `mov eax, mode; mov [r14+0x90], eax; jmp` to the scaled branch.
+    *field::<14>(image, UPSCALER_SIZING)? = [0xb8, ffx_mode, 0, 0, 0, 0x41, 0x89, 0x86, 0x90, 0, 0, 0, 0xeb, 0x0a];
+    if scale != 2.0 / 3.0 {
+        // The jump leaves the native branch unreached: its load's operand
+        // becomes a literal of ours, which the scaled branch loads instead.
+        let literal = NATIVE_LOAD + 4;
+        *field::<4>(image, literal)? = scale.to_le_bytes();
+        let displacement = literal as i32 - (SCALED_LOAD as i32 + 8);
+        *field::<4>(image, SCALED_LOAD + 4)? = displacement.to_le_bytes();
+    }
+    *field::<4>(image, TEMPORAL_SCALE)? = scale.to_le_bytes();
+    Ok(())
+}
+
 /// The bytes the title reserves for two scanout buffers of this size:
 /// tiled RGBA8 (`SW_64KB_D_X`), each 64 KiB aligned, the two rounded up to
 /// 2 MiB, as its own allocation check does.
@@ -179,6 +233,19 @@ mod tests {
             let displacement = i32::from_le_bytes(load[4..].try_into().unwrap());
             assert_eq!(UI_VIEWPORT_LOAD.wrapping_add(8).wrapping_add_signed(displacement), SDR_MODE);
             assert!(prepare(&mut image, output).is_err());
+            // Then the FidelityFX path at each DLSS scale.
+            for (scale, mode) in [(1.0f32, 0u8), (2.0 / 3.0, 1), (0.58, 2), (0.5, 3)] {
+                let mut image = image.clone();
+                prepare_upscaler(&mut image, scale, mode).unwrap();
+                let sizing = *field::<14>(&mut image, UPSCALER_SIZING).unwrap();
+                assert_eq!((sizing[1], &sizing[12..]), (mode, &[0xeb, 0x0a][..]));
+                // The jump lands on the scaled load, which loads the scale.
+                assert_eq!(UPSCALER_SIZING + 14 + 0x0a, SCALED_LOAD);
+                let displacement = i32::from_le_bytes(*field::<4>(&mut image, SCALED_LOAD + 4).unwrap());
+                let loaded = (SCALED_LOAD + 8).wrapping_add_signed(displacement);
+                assert_eq!(f32::from_le_bytes(*field::<4>(&mut image, loaded).unwrap()), scale);
+                assert!(prepare_upscaler(&mut image, scale, mode).is_err());
+            }
         }
     }
 }
