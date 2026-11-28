@@ -42,9 +42,9 @@ const ITEMS: &[Item] = &[
         var: "VICTORY_OUTPUT",
         label: "RENDER SIZE",
         values: &[
-            ("1080p", "1080P"),
-            ("1080p-720p", "720P UP TO 1080P"),
             ("1440p-1080p", "1080P UP TO 1440P"),
+            ("1080p", "1080P (CRASHES)"),
+            ("1080p-720p", "720P TO 1080P (CRASHES)"),
             ("1440p", "1440P"),
             ("4k", "1440P UP TO 4K (CONSOLE)"),
         ],

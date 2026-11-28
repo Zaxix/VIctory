@@ -8,14 +8,13 @@
 //! modes. Here the image is patched before it is mapped so that the title
 //! makes a smaller output and a smaller scene, with no 4K pass at all:
 //!
-//! - `1080p` (the default with the faster defaults; the owner's screen is
-//!   1080p): a 1920x1080 output with the scene at 1920x1080, drawn at the
-//!   screen's own size with no scaling up (under half the pixels of the
-//!   stock scene's, a quarter of the stock output's);
+//! - `1080p`: a 1920x1080 output with the scene at 1920x1080 (the title
+//!   stopped at its start with it in run 20: not usable yet);
 //! - `1080p-720p`: a 1920x1080 output, the scene at 1280x720 (two thirds,
 //!   as stock) scaled up by the title's temporal pass;
-//! - `1440p-1080p`: a 2560x1440 output, the scene at 1920x1080 (the size
-//!   other forks have played at);
+//! - `1440p-1080p` (the default with the faster defaults): a 2560x1440
+//!   output, the scene at 1920x1080 (the size other forks have played at;
+//!   under half the stock scene's pixels), shrunk to a 1080p screen;
 //! - `1440p`: a 2560x1440 output, the scene at 2560x1440;
 //! - `4k` or `0`: the stock image.
 //!
@@ -64,7 +63,9 @@ pub(crate) fn asked() -> Result<Option<Output>> {
     let value = match value.as_deref().map(str::trim) {
         Some(v) => v.to_ascii_lowercase(),
         // The faster defaults (`VICTORY_FAST`, on unless `=0`).
-        None if std::env::var_os("VICTORY_FAST").is_none_or(|v| v != "0") => "1080p".to_owned(),
+        // (1080p crashed the title at its start on the owner's PC, run 20:
+        // a break right after its memory hooks, with E_INVALIDARG at hand.)
+        None if std::env::var_os("VICTORY_FAST").is_none_or(|v| v != "0") => "1440p-1080p".to_owned(),
         None => return Ok(None),
     };
     Ok(match value.as_str() {
