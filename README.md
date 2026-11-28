@@ -101,11 +101,12 @@ of them over 1 s).
 **After run 19 (not run yet), aimed at the 10 fps floor:** the frame works out as the card's ~84 ms
 plus ~65 ms of it standing idle while we prepare, one after the other. Three changes, all on with the
 faster defaults:
-- `VICTORY_OUTPUT=1440p-1080p` (the default): the title makes a 2560x1440 output with the scene at
-  1920x1080, instead of 3840x2160 with the scene at 2560x1440. That's under half the scene's pixels and
-  no 4K passes. The runner patches four places in the retail image (found by DexNom), each checked
-  against the stock bytes first. `1440p` keeps the scene at 2560x1440, `1080p` is a 1920x1080 output
-  with the scene at 1280x720 (untried), and `4k` is the console's own.
+- `VICTORY_OUTPUT=1080p` (the default; the owner's screen is 1080p): the title makes a 1920x1080 output
+  with the scene drawn at 1920x1080, instead of 3840x2160 with the scene at 2560x1440. Under half the
+  scene's pixels, and no 4K passes. The runner patches four places in the retail image (found by
+  DexNom), each checked against the stock bytes first. Also: `1080p-720p` (scene at 1280x720, scaled
+  up), `1440p-1080p`, `1440p`, and `4k`, the console's own. Before this, every run made a 4K image that
+  was shrunk to the window.
 - `VICTORY_TITLE_COPY_PLAIN`: the title's own copies of its memory, 28 a frame, are made in place and
   split over the helper threads when large. They used to go through the kernel on one thread (10.6 ms
   a frame median, 24 ms in heavy frames).

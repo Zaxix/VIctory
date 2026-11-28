@@ -64,9 +64,10 @@
 //!   the card has nothing of ours to run (run 19: the card idle 50-55 ms of
 //!   a 140 ms frame while the submitting thread prepared).
 //!
-//! The runner's `VICTORY_OUTPUT` follows `VICTORY_FAST` too: a 2560x1440
-//! output with the scene at 1920x1080, not the console's 3840x2160 with the
-//! scene at 2560x1440 (`apps/victory/src/output.rs`).
+//! The runner's `VICTORY_OUTPUT` follows `VICTORY_FAST` too: a 1920x1080
+//! output with the scene at 1920x1080, the owner's screen's size, not the
+//! console's 3840x2160 with the scene at 2560x1440
+//! (`apps/victory/src/output.rs`).
 //!
 //! `SETTLE_ROOM`, `LOOKUP_CACHE`, `PARALLEL_REFRESH`, `CARD_SYNC_BATCH`,
 //! `WRITE_PLAIN`, `TITLE_COPY_PLAIN` and `EARLY_START` also take `alt`

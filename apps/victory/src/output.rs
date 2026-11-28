@@ -8,12 +8,15 @@
 //! modes. Here the image is patched before it is mapped so that the title
 //! makes a smaller output and a smaller scene, with no 4K pass at all:
 //!
-//! - `1440p-1080p` (the default with the faster defaults): a 2560x1440
-//!   output, the scene at 1920x1080 (under half the pixels of the stock
-//!   scene's, a quarter of the stock output's);
+//! - `1080p` (the default with the faster defaults; the owner's screen is
+//!   1080p): a 1920x1080 output with the scene at 1920x1080, drawn at the
+//!   screen's own size with no scaling up (under half the pixels of the
+//!   stock scene's, a quarter of the stock output's);
+//! - `1080p-720p`: a 1920x1080 output, the scene at 1280x720 (two thirds,
+//!   as stock) scaled up by the title's temporal pass;
+//! - `1440p-1080p`: a 2560x1440 output, the scene at 1920x1080 (the size
+//!   other forks have played at);
 //! - `1440p`: a 2560x1440 output, the scene at 2560x1440;
-//! - `1080p`: a 1920x1080 output, the scene at 1280x720 (two thirds, as
-//!   stock; not seen in a run yet);
 //! - `4k` or `0`: the stock image.
 //!
 //! Four places are changed, each checked against the stock build first
@@ -61,15 +64,16 @@ pub(crate) fn asked() -> Result<Option<Output>> {
     let value = match value.as_deref().map(str::trim) {
         Some(v) => v.to_ascii_lowercase(),
         // The faster defaults (`VICTORY_FAST`, on unless `=0`).
-        None if std::env::var_os("VICTORY_FAST").is_none_or(|v| v != "0") => "1440p-1080p".to_owned(),
+        None if std::env::var_os("VICTORY_FAST").is_none_or(|v| v != "0") => "1080p".to_owned(),
         None => return Ok(None),
     };
     Ok(match value.as_str() {
         "" | "0" | "4k" | "stock" => None,
-        "1440p-1080p" | "1" => Some(Output { width: 2560, height: 1440, scene: (1920, 1080) }),
+        "1080p" | "1" => Some(Output { width: 1920, height: 1080, scene: (1920, 1080) }),
+        "1080p-720p" => Some(Output { width: 1920, height: 1080, scene: (1280, 720) }),
+        "1440p-1080p" => Some(Output { width: 2560, height: 1440, scene: (1920, 1080) }),
         "1440p" => Some(Output { width: 2560, height: 1440, scene: (2560, 1440) }),
-        "1080p" => Some(Output { width: 1920, height: 1080, scene: (1280, 720) }),
-        other => anyhow::bail!("VICTORY_OUTPUT={other}: one of 1440p-1080p, 1440p, 1080p, 4k"),
+        other => anyhow::bail!("VICTORY_OUTPUT={other}: one of 1080p, 1080p-720p, 1440p-1080p, 1440p, 4k"),
     })
 }
 
@@ -162,6 +166,7 @@ mod tests {
             Output { width: 2560, height: 1440, scene: (1920, 1080) },
             Output { width: 2560, height: 1440, scene: (2560, 1440) },
             Output { width: 1920, height: 1080, scene: (1280, 720) },
+            Output { width: 1920, height: 1080, scene: (1920, 1080) },
         ] {
             let mut image = victory_loader::prepare(&bytes).unwrap();
             prepare(&mut image, output).unwrap();
